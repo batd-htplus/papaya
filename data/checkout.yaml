@@ -1,0 +1,8 @@
+# Checkout form inputs for TC-001 (SauceDemo).
+# Keys become $shell_vars inside the testcase bash blocks.
+# Local-only overrides: data/checkout.local.yaml (gitignored).
+username: standard_user
+password: secret_sauce
+first_name: John
+last_name: Doe
+postal_code: "12345"

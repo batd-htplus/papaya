@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+case "${1:-}" in
+  -h|--help|"")
+    exec node scripts/browser-test-runner.mjs --help
+    ;;
+  new|run|validate|list|history|heal|flaky|quarantine|coverage|eval|doctor|discover)
+    cmd="$1"; shift
+    exec node scripts/browser-test-runner.mjs "$cmd" "$@"
+    ;;
+  *)
+    cat >&2 <<'USAGE'
+Usage:
+  ./browser-test run      <file-or-dir>     execute testcase(s)
+  ./browser-test validate <file-or-dir>     static checks
+  ./browser-test new      <module> [title]  scaffold a new testcase (asks auth/data questions)
+  ./browser-test discover <url>             list testable locators on a page
+  ./browser-test list                       testcases + last status
+  ./browser-test history [<TC-ID>]          recent run history (+ flake)
+  ./browser-test heal <file> <step>         heal brief: intent + live snapshot
+  ./browser-test flaky                      flake scores + quarantine advice
+  ./browser-test quarantine [list|add|remove <TC-ID>]
+  ./browser-test doctor                     agent-browser doctor
+USAGE
+    exit 2
+    ;;
+esac

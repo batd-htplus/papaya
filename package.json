@@ -1,0 +1,42 @@
+{
+    "name": "papaya-browser-test",
+    "version": "1.0.0",
+    "description": "Browser control skill for LLM agents — drive a real browser reliably with agent-browser and save explored flows as re-runnable Markdown testcases.",
+    "type": "module",
+    "bin": {
+        "browser-test": "./browser-test"
+    },
+    "scripts": {
+        "eval": "node scripts/browser-test-runner.mjs eval",
+        "doctor": "node scripts/browser-test-runner.mjs doctor"
+    },
+    "engines": {
+        "node": ">=18"
+    },
+    "peerDependencies": {
+        "agent-browser": ">=0.27"
+    },
+    "files": [
+        "browser-test",
+        "scripts/",
+        "docs/",
+        "eval/",
+        "env/",
+        "AGENTS.md",
+        "SKILL.md",
+        "README.md",
+        "coverage.map.example",
+        ".gitignore"
+    ],
+    "keywords": [
+        "browser",
+        "e2e",
+        "integration-test",
+        "agent-browser",
+        "llm",
+        "agent",
+        "regression"
+    ],
+    "license": "MIT",
+    "author": "BaTD <batd@htplus.software>"
+}

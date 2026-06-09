@@ -1,0 +1,30 @@
+# === Papaya skill — required ignores ===
+outputs/
+env/*.local.yaml
+env/*.local.yml
+data/*.local.yaml
+data/*.local.yml
+state/*.json
+profile.json
+# === end Papaya ===
+
+# This repo only: local demo instances. The template ships the .example files
+# (env/env.yaml.example, coverage.map.example); a real project commits its own
+# env/env.yaml and coverage.map, so these stay out of Papaya's own history.
+/env/env.yaml
+/coverage.map
+
+# Generic env files
+.env
+.env.local
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor / IDE noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

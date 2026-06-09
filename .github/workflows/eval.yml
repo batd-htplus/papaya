@@ -1,0 +1,20 @@
+name: skill-eval
+
+# Self-test of the skill's own machinery (validator, classifier, flake math,
+# version consistency). Pure Node — no browser/agent-browser needed — so it is
+# safe and fast to run on every push and PR to protect the skill from regressions.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run skill self-test
+        run: node scripts/browser-test-runner.mjs eval

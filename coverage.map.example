@@ -1,0 +1,12 @@
+# coverage.map — the feature inventory (the mandate).
+# Copy to your project root as ./coverage.map and edit.
+# One feature per line:  module | Feature name | optional-route-glob
+# Lines starting with # are ignored. A feature is "covered" when at least one
+# testcase has a matching `module:` (or a final URL matching the route glob).
+
+home     | Home / landing page
+login    | Login flow              | **/login
+signup   | Account registration   | **/signup
+search   | Search results          | **/results**
+checkout | Checkout & payment      | **/checkout/**
+profile  | User profile settings   | **/account/**

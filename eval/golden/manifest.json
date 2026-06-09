@@ -1,0 +1,16 @@
+{
+    "_note": "Golden cases for ./browser-test eval. 'good' must validate clean; each 'bad' must trip its target rule. This is the skill's own regression suite.",
+    "good": [
+        "good/001_home.md"
+    ],
+    "bad": [
+        { "file": "bad/001_nosess.md",   "rule": "no_session" },
+        { "file": "bad/001_weakgrep.md", "rule": "weak_grep" },
+        { "file": "bad/001_sleepcmd.md", "rule": "bash_sleep" },
+        { "file": "bad/001_hardurl.md",  "rule": "hardcoded_url" },
+        { "file": "bad/001_secret.md",   "rule": "secret_in_frontmatter" },
+        { "file": "bad/001_swallow.md",  "rule": "swallow_exit" },
+        { "file": "bad/001_strict.md",   "rule": "disable_strict" },
+        { "file": "bad/001_tautology.md","rule": "expect_tautology" }
+    ]
+}
