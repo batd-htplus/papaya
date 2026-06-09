@@ -178,16 +178,37 @@ function readEnv(file) {
     return parseSimpleYaml(readFileSync(file, "utf8"));
 }
 
+// Single source of truth for the YAML frontmatter delimiters. Every command
+// that locates frontmatter must go through here so the parse logic can't drift.
+const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
+
+function frontmatterText(md, { required = true } = {}) {
+    const fm = md.match(FRONTMATTER_RE);
+    if (!fm && required) throw new Error("Missing YAML frontmatter");
+    return fm?.[1] || "";
+}
+
+// Parse frontmatter from an already-read Markdown string. Use this when the
+// caller already has the file contents in hand, to avoid re-reading.
+function parseFrontmatter(md, { required = false } = {}) {
+    return parseSimpleYaml(frontmatterText(md, { required }));
+}
+
+// Read a testcase file and return only its parsed frontmatter. Forgiving by
+// default (missing frontmatter -> {}) to match the list/new/duplicate-id
+// scans; pass { required: true } when a missing block should throw.
+function readMeta(file, opts = {}) {
+    return parseFrontmatter(readFileSync(file, "utf8"), opts);
+}
+
 function readCase(file) {
     if (!existsSync(file)) throw new Error(`File not found: ${file}`);
     const md = readFileSync(file, "utf8");
-    const fm = md.match(/^---\n([\s\S]*?)\n---/);
-    if (!fm) throw new Error("Missing YAML frontmatter");
-    return { md, meta: parseSimpleYaml(fm[1]), steps: parseSteps(md) };
+    return { md, meta: parseFrontmatter(md, { required: true }), steps: parseSteps(md) };
 }
 
 function parseSteps(md) {
-    const body = md.replace(/^---\n[\s\S]*?\n---/, "");
+    const body = md.replace(FRONTMATTER_RE, "");
     const parts = body.split(/^###\s+\d+\.\s+/m).slice(1);
     const steps = [];
     for (const part of parts) {
@@ -666,7 +687,6 @@ function summary(result) {
 
 const WEAK_GREP = /\bgrep\s+-q[A-Za-z]*\s+(?:\.(?=\s|$|\||;)|["']\.?["'])/;
 const BASH_SLEEP = /(?:^|[;&|]|\s)(?:\/(?:usr\/)?bin\/)?sleep\s+[\d.]+|\bpython3?\s+-c\s+["'][^"']*time\.sleep|\bnode\s+-e\s+["'][^"']*setTimeout|\bread\s+-t\s+\d/;
-const WAIT_MS = /agent-browser\s+(?:--session\s+\S+\s+)?wait\s+\d+\b/;
 const DISABLE_STRICT = /(?:^|[;&|]\s*|\s)set\s+\+e\b|set\s+\+o\s+(?:errexit|pipefail)\b/;
 const SWALLOW_EXIT = /\|\|\s*(?:true|:|\/(?:usr\/)?bin\/true)\b/;
 const TRAP_ERR = /\btrap\b[^\n]*\bERR\b/;
@@ -679,14 +699,160 @@ const HARDCODED_CRED = /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_
 const MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December";
 const HARDCODED_DATE = new RegExp(`\\b\\d{4}-\\d{2}-\\d{2}\\b|\\b(?:${MONTHS})\\b[ ,]+\\d{1,4}\\b|\\b\\d{1,2}[ ,]+(?:${MONTHS})\\b`, "i");
 
+const VALIDATOR_POLICY = {
+    requiredFrontmatter: ["id", "title", "module", "session", "env", "state", "techniques", "expect"],
+    shellSeparators: new Set([";", "|", "||", "&&", "&"]),
+    agentBrowserGlobalFlags: {
+        withValue: new Set(["--session", "-s", "--state", "--profile", "--headers", "--proxy", "--cdp", "--session-name"]),
+        noValue: new Set(["--json", "--headed", "--auto-connect"]),
+        assignment: /^--(?:state|profile|headers|proxy|cdp|session-name)=/,
+    },
+    assertionCommands: new Set(["wait", "find", "is"]),
+    checkedGetShellSignals: /\bgrep\b|\bjq\b|\btest\b|\[\[|\[\s|case\s+.+\s+in\b|\|\||&&|exit\s+1/,
+    authSetupModules: new Set(["login", "signup", "auth", "register"]),
+    embeddedAuthMarkers: /data-qa="signup-button"|ACCOUNT CREATED|ENTER ACCOUNT INFORMATION|signup-email/,
+    positionalDomQuery: /query(?:Selector|SelectorAll)\s*\([^)]*\)\s*\[\d+\]/,
+};
+
 function v(rule, label, message, fix) { return { rule, label, message, fix }; }
+
+function logicalLines(code) {
+    const out = [];
+    let cur = "";
+    for (const raw of code.split(/\r?\n/)) {
+        const line = cur ? `${cur}${raw.trimStart()}` : raw;
+        if (/\\\s*$/.test(line)) {
+            cur = line.replace(/\\\s*$/, "");
+        } else {
+            out.push(line);
+            cur = "";
+        }
+    }
+    if (cur) out.push(cur);
+    return out;
+}
+
+function tokenizeShellLine(line) {
+    const tokens = [];
+    let cur = "";
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quote) {
+            if (ch === "\\" && quote === '"' && i + 1 < line.length) {
+                cur += line[++i];
+                continue;
+            }
+            if (ch === quote) quote = null;
+            else cur += ch;
+            continue;
+        }
+        if (ch === '"' || ch === "'") { quote = ch; continue; }
+        if (/\s/.test(ch)) {
+            if (cur) { tokens.push(cur); cur = ""; }
+            continue;
+        }
+        if (ch === ";" || ch === "|" || ch === "&") {
+            if (cur) { tokens.push(cur); cur = ""; }
+            if ((ch === "|" || ch === "&") && line[i + 1] === ch) tokens.push(ch + line[++i]);
+            else tokens.push(ch);
+            continue;
+        }
+        cur += ch;
+    }
+    if (cur) tokens.push(cur);
+    return tokens;
+}
+
+function parseAgentBrowserArgs(args) {
+    let hasSession = false;
+    let sessionValue = null;
+    let i = 0;
+    for (; i < args.length; i++) {
+        const tok = args[i];
+        if (VALIDATOR_POLICY.shellSeparators.has(tok)) break;
+        if (tok === "--session" || tok === "-s") {
+            sessionValue = args[i + 1] || "";
+            hasSession = sessionValue === "$SESSION";
+            i++;
+            continue;
+        }
+        if (tok.startsWith("--session=")) {
+            sessionValue = tok.slice("--session=".length);
+            hasSession = sessionValue === "$SESSION";
+            continue;
+        }
+        if (/^-s.+/.test(tok)) {
+            sessionValue = tok.slice(2);
+            hasSession = sessionValue === "$SESSION";
+            continue;
+        }
+        if (VALIDATOR_POLICY.agentBrowserGlobalFlags.withValue.has(tok)) { i++; continue; }
+        if (VALIDATOR_POLICY.agentBrowserGlobalFlags.noValue.has(tok)) continue;
+        if (VALIDATOR_POLICY.agentBrowserGlobalFlags.assignment.test(tok)) continue;
+        if (tok.startsWith("-")) continue;
+        break;
+    }
+    return { hasSession, sessionValue, command: args[i] || "", args: args.slice(i + 1) };
+}
+
+function agentBrowserInvocationsInLine(raw) {
+    const invocations = [];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith("#")) return invocations;
+    const codePart = stripComment(raw);
+    const hasInlineComment = codePart !== raw;
+    const tokens = tokenizeShellLine(codePart);
+    let foundTokenCommand = false;
+    for (let i = 0; i < tokens.length; i++) {
+        if (tokens[i] !== "agent-browser") continue;
+        foundTokenCommand = true;
+        const end = tokens.findIndex((t, idx) => idx > i && VALIDATOR_POLICY.shellSeparators.has(t));
+        const slice = tokens.slice(i + 1, end === -1 ? tokens.length : end);
+        invocations.push({ ...parseAgentBrowserArgs(slice), line: raw, codePart, hasInlineComment });
+    }
+    // Common checked-get pattern: url="$(agent-browser --session "$SESSION" get url)".
+    // The lightweight tokenizer sees that as an assignment token, so recover the
+    // inner browser invocation without attempting to parse all of bash.
+    if (!foundTokenCommand) {
+        for (const m of codePart.matchAll(/\$\(\s*agent-browser\b([^)]*)\)/g)) {
+            const innerTokens = tokenizeShellLine(`agent-browser${m[1]}`);
+            invocations.push({ ...parseAgentBrowserArgs(innerTokens.slice(1)), line: raw, codePart, hasInlineComment });
+        }
+    }
+    return invocations;
+}
+
+function analyzeStepCode(code) {
+    return logicalLines(code).map((raw) => ({
+        raw,
+        line: raw.trim(),
+        codePart: stripComment(raw.trim()),
+        calls: agentBrowserInvocationsInLine(raw),
+    }));
+}
+
+function hasCheckedGet(step, invocations) {
+    if (!invocations.some((x) => x.command === "get")) return true;
+    return VALIDATOR_POLICY.checkedGetShellSignals.test(step.code);
+}
+
+function hasBrowserAssertion(step, invocations) {
+    if (/\bgrep\b/.test(step.code)) return true;
+    if (invocations.some((x) => VALIDATOR_POLICY.assertionCommands.has(x.command))) return true;
+    return invocations.some((x) => x.command === "get");
+}
+
+function isBareMsWait(call) {
+    return call.command === "wait" && /^\d+$/.test(call.args[0] || "") && !call.hasInlineComment;
+}
 
 function collectValidation(tc, file) {
     const errors = [];
     const warnings = [];
     const name = basename(file);
     const n = name.match(/^(\d{3})_/)?.[1];
-    const frontmatter = readFileSync(file, "utf8").match(/^---\n([\s\S]*?)\n---/)?.[1] || "";
+    const frontmatter = frontmatterText(tc.md || readFileSync(file, "utf8"), { required: false });
 
     if (!/^\d{3}_[a-z][a-z0-9_]*\.md$/.test(name)) {
         errors.push(v("filename", "frontmatter",
@@ -703,7 +869,7 @@ function collectValidation(tc, file) {
             "session must match filename without .md",
             `set frontmatter: session: ${name.replace(/\.md$/, "")}`));
     }
-    for (const key of ["id", "title", "module", "session", "env", "state", "techniques", "expect"]) {
+    for (const key of VALIDATOR_POLICY.requiredFrontmatter) {
         if (!(key in tc.meta)) {
             errors.push(v("frontmatter_missing", "frontmatter",
                 `missing field: ${key}`,
@@ -768,13 +934,17 @@ function collectValidation(tc, file) {
                 "step has no 'intent:' line, so it cannot self-heal from intent",
                 "add '- intent: <what this step achieves, semantically>' before the bash block"));
         }
-        // Accept both --session and the -s short flag.
-        if (!/agent-browser\s+(?:--session|-s)\s+(?:"\$SESSION"|\$SESSION)/.test(step.code)) {
+        const analyzedLines = analyzeStepCode(step.code);
+        const abCalls = analyzedLines.flatMap((x) => x.calls);
+        // Accept both --session and the -s short flag, but require it on every
+        // agent-browser invocation; one correctly-scoped command does not make
+        // later browser commands session-safe.
+        if (abCalls.some((x) => !x.hasSession)) {
             errors.push(v("no_session", label,
                 "must use agent-browser --session \"$SESSION\" (or -s \"$SESSION\")",
                 "prefix every agent-browser call with --session \"$SESSION\""));
         }
-        if (!/(grep|agent-browser\s+(?:--session|-s)\s+(?:"\$SESSION"|\$SESSION)\s+(?:is|find|get|wait))/.test(step.code)) {
+        if (!hasBrowserAssertion(step, abCalls)) {
             errors.push(v("no_assertion", label,
                 "step lacks an assertion / wait",
                 "add wait --text/--url/--load, find, is visible, or grep on expected value"));
@@ -787,18 +957,15 @@ function collectValidation(tc, file) {
         // `get` on its own succeeds no matter what the page says, so a step whose
         // only signal is an unchecked `get` asserts nothing — require a real check.
         {
-            const hasGet = /agent-browser\s+(?:--session|-s)\s+(?:"\$SESSION"|\$SESSION)\s+get\b/.test(step.code);
-            const hasRealCheck = /(grep|wait\s+--|find\s+(?:role|text|label|placeholder|testid)|\bis\b|\|\||&&|exit\s+1)/.test(step.code);
-            if (hasGet && !hasRealCheck) {
+            const hasGet = abCalls.some((x) => x.command === "get");
+            if (hasGet && !hasCheckedGet(step, abCalls)) {
                 errors.push(v("weak_assertion", label,
                     "`get` is used but its output is never checked — the step asserts nothing",
                     "pipe to grep on an expected value, or use wait --text/--url, or `|| { echo FAIL; exit 1; }`"));
             }
         }
-        for (const raw of step.code.split(/\r?\n/)) {
-            const line = raw.trim();
+        for (const { line, codePart, calls } of analyzedLines) {
             if (!line || line.startsWith("#")) continue;
-            const codePart = line.split("#")[0];
             // The runner trusts the step's exit code; these constructs let a
             // failed command still report success, so they're hard errors.
             if (DISABLE_STRICT.test(codePart)) {
@@ -821,10 +988,12 @@ function collectValidation(tc, file) {
                     "bash 'sleep N' is forbidden",
                     "use agent-browser wait --text/--url/--load/--fn or wait @ref"));
             }
-            if (WAIT_MS.test(codePart) && !line.includes("#")) {
-                errors.push(v("bare_wait", label,
-                    "bare 'wait <ms>' without inline '# reason' comment",
-                    "use signal-based wait (--text/--url/--load/--fn) or add inline '# <reason>'"));
+            for (const call of calls) {
+                if (isBareMsWait(call)) {
+                    errors.push(v("bare_wait", label,
+                        "bare 'wait <ms>' without inline '# reason' comment",
+                        "use signal-based wait (--text/--url/--load/--fn) or add inline '# <reason>'"));
+                }
             }
             for (const m of codePart.matchAll(HARDCODED_URL)) {
                 const url = m[0].replace(/[),;]+$/, "");
@@ -850,8 +1019,8 @@ function collectValidation(tc, file) {
     const allCode = tc.steps.map((s) => s.code).join("\n");
 
     // Embedded signup/login in a non-auth module → should use state: instead
-    if (!["login", "signup", "auth", "register"].includes(String(tc.meta.module))) {
-        if (/data-qa="signup-button"|ACCOUNT CREATED|ENTER ACCOUNT INFORMATION|signup-email/.test(allCode)) {
+    if (!VALIDATOR_POLICY.authSetupModules.has(String(tc.meta.module))) {
+        if (VALIDATOR_POLICY.embeddedAuthMarkers.test(allCode)) {
             warnings.push(v("embedded_auth_flow", "steps",
                 "signup/login sequence found in a non-auth module — embed auth as state: frontmatter instead",
                 "save auth once: agent-browser --session <s> state save state/<user>.auth.json, then set state: state/<user>.auth.json in frontmatter"));
@@ -861,7 +1030,7 @@ function collectValidation(tc, file) {
     // eval with positional DOM indexing — silent breakage when DOM changes
     if (tc.steps.some((s) =>
         /\beval\b/.test(s.code) &&
-        /query(?:Selector|SelectorAll)\s*\([^)]*\)\s*\[\d+\]/.test(s.code.replace(/\n/g, " ")))) {
+        VALIDATOR_POLICY.positionalDomQuery.test(s.code.replace(/\n/g, " ")))) {
         warnings.push(v("eval_positional_query", "steps",
             "eval uses positional querySelectorAll indexing (els[0], els[1]…) — breaks silently when DOM changes",
             "use find first '[data-qa=\"field\"]' fill \"$value\"; run ./browser-test discover <url> to list available attributes"));
@@ -1132,9 +1301,7 @@ function listCommand(opts = {}) {
     let notPassing = 0;
     for (const f of files) {
         try {
-            const md = readFileSync(join(testsDir, f), "utf8");
-            const fm = md.match(/^---\n([\s\S]*?)\n---/)?.[1] || "";
-            const meta = parseSimpleYaml(fm);
+            const meta = readMeta(join(testsDir, f));
             const last = readLastResult(meta.id);
             const curSha = fileSha(join(testsDir, f));
             let status;
@@ -1522,8 +1689,7 @@ async function newCommand(argv) {
     // Next free TC-NNN across the whole tests/ dir (ids are globally unique).
     let maxN = 0;
     for (const f of readdirSync(testsDir).filter(isTestFile)) {
-        const fm = readFileSync(join(testsDir, f), "utf8").match(/^---\n([\s\S]*?)\n---/)?.[1] || "";
-        const m = String(parseSimpleYaml(fm).id || "").match(/TC-(\d+)/);
+        const m = String(readMeta(join(testsDir, f)).id || "").match(/TC-(\d+)/);
         if (m) maxN = Math.max(maxN, Number(m[1]));
     }
     const nnn = String(maxN + 1).padStart(3, "0");
@@ -1580,8 +1746,7 @@ function duplicateIds(files) {
     const byId = {};
     for (const f of files) {
         try {
-            const fm = readFileSync(f, "utf8").match(/^---\n([\s\S]*?)\n---/)?.[1] || "";
-            const id = parseSimpleYaml(fm).id;
+            const id = readMeta(f).id;
             if (id) (byId[id] ||= []).push(basename(f));
         } catch { /* parse errors handled elsewhere */ }
     }

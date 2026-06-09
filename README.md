@@ -32,6 +32,20 @@ the point is the agent and the flows it writes.
 | `coverage.map.example` | project | starter feature inventory; copy to `coverage.map` |
 | `outputs/`       | runtime       | run artifacts (gitignored) |
 
+## Ownership boundary
+
+Papaya intentionally has a narrow job:
+
+| Layer | Owner | Source of truth |
+|-------|-------|-----------------|
+| Browser command syntax, refs, auth mechanics, tabs, frames, network, screenshots | `agent-browser` | `agent-browser skills get core --full` and `agent-browser <cmd> --help` |
+| Testcase contract, Markdown shape, env/data/state wiring, validator, runner artifacts, CI gate | Papaya | `AGENTS.md`, `docs/REFERENCE.md`, `./browser-test --help` |
+| Project-specific selectors, routes, data, auth state | Your app | live exploration + committed testcase files |
+
+This keeps Papaya small and avoids freezing a stale copy of agent-browser's
+command reference. Browser examples in this repo are contract examples, not a
+replacement for the version-matched core guide.
+
 ## Using with coding agents
 
 You don't need per-IDE rule files. Two IDE-agnostic mechanisms do the work:
@@ -51,12 +65,12 @@ Cline `.clinerules`, Copilot `.github/copilot-instructions.md`): "Follow `AGENTS
 ## Prerequisites
 
 Papaya drives the browser through `agent-browser`, so install it (and its Chrome)
-first — full guide at [agent-browser.dev/installation](https://agent-browser.dev/installation):
+first. Use the official install guide for platform details:
+[agent-browser.dev/installation](https://agent-browser.dev/installation).
 
 ```bash
 npm install -g agent-browser        # native Rust CLI (recommended)
 agent-browser install               # download Chrome for Testing (first run only)
-agent-browser install --with-deps   # Linux only: also install system deps
 agent-browser doctor                # verify install / daemon / Chrome
 ```
 
@@ -91,28 +105,34 @@ project `.gitignore` once (idempotent).
 ## Daily use
 
 ```bash
-./browser-test new      <module> "<title>" # scaffold a new testcase
-./browser-test discover <url>              # list testable locators on a page (data-qa, roles)
-./browser-test list                        # what testcases exist + last status
-./browser-test validate tests/<file>.md    # static lint
-./browser-test run      tests/<file>.md    # execute (one file)
-./browser-test run      tests/             # execute (all .md under folder)
-./browser-test history [<TC-ID>]           # last runs + flake %
-./browser-test heal     tests/<file>.md N  # heal brief for step N (intent + live snapshot)
-./browser-test flaky                       # flake scores + quarantine advice
-./browser-test coverage                    # features tested vs gaps
-./browser-test eval                        # self-test the skill's machinery
-./browser-test doctor                      # agent-browser doctor
+./browser-test new <module> "<title>"   # scaffold
+./browser-test discover <url>           # locator inventory for saving steps
+./browser-test validate tests/          # static contract checks
+./browser-test run tests/               # execute regression suite
+./browser-test list --strict            # reject unverified/stale tests
+./browser-test heal tests/<file>.md N   # failure brief for one step
+./browser-test coverage                 # feature gaps
+./browser-test eval                     # Papaya self-test
+./browser-test doctor                   # local + agent-browser preflight
 ```
 
 On failure read `outputs/<TC-ID>/latest/summary.md` first — it names the failure
 class and the next action. For selector drift, `./browser-test heal <file> <step>`
 prints the step's intent next to a live snapshot so you can re-resolve it.
 
+## Maintenance
+
+Run the skill's non-browser regression checks before changing the validator,
+classifier, docs contract, or golden fixtures:
+
+```bash
+npm test
+```
+
 ## References
 
-- [agent-browser.dev](https://agent-browser.dev/) — overview, install
+- [agent-browser.dev](https://agent-browser.dev/) — overview and install
 - [agent-browser.dev/skills](https://agent-browser.dev/skills) — skills system
 - [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) — source
-- `agent-browser skills get core --full` — version-matched in-CLI reference
-- `agent-browser doctor` — diagnose install / daemon / Chrome
+- `agent-browser skills get core --full` — version-matched browser command guide
+- `agent-browser doctor` — install / daemon / Chrome diagnosis

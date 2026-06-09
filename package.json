@@ -8,6 +8,8 @@
     },
     "scripts": {
         "eval": "node scripts/browser-test-runner.mjs eval",
+        "validate": "node scripts/browser-test-runner.mjs validate tests/",
+        "test": "npm run eval && npm run validate",
         "doctor": "node scripts/browser-test-runner.mjs doctor"
     },
     "engines": {

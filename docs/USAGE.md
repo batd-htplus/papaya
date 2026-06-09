@@ -1,110 +1,84 @@
-# USAGE.md — End-user prompt patterns
+# USAGE.md - Prompt playbook
 
-Prompts the user types; behaviour the LLM should follow when this skill is
-loaded. Project-agnostic phrasing.
+Use this file for user intent. Use `AGENTS.md` for the contract and
+`agent-browser skills get core --full` for browser command syntax.
 
-## Write a new testcase
+## Write A New Test
 
-> Write IT for the login flow using credentials from env.
+User: "Write IT/e2e for login/checkout/etc."
 
-LLM should:
-1. Scaffold the file: `./browser-test new login "Login with valid creds"` —
-   this generates the correct id/session/frontmatter so the shape is identical
-   no matter which agent writes it. Read `AGENTS.md`.
-2. Explore the login flow live via `agent-browser` until it passes. Use
-   `snapshot -i` to understand the UI and `@eN` refs for immediate actions, but
-   prefer stable test attributes and semantic locators in the saved testcase.
-3. Fill the scaffold's `<PLACEHOLDER>`s with commands that already passed;
-   replace literals with `$base_url`, `$username`, ... (keep the generated id).
-4. Run `validate` + `run`. Report PASS/FAIL + artifacts path.
+1. Run `./browser-test new <module> "<title>"`.
+2. Read `AGENTS.md` and load the agent-browser core guide.
+3. Explore live until the flow passes.
+4. Save only proven commands with durable locators and project variables.
+5. Run `./browser-test validate tests/<file>.md` and
+   `./browser-test run tests/<file>.md`.
+6. Report PASS/FAIL and artifacts path.
 
-## Run regression
+## Run Regression
 
-> Re-run all testcases in the checkout module.
+User: "Run/re-run tests."
 
-LLM should:
-1. `./browser-test list` to enumerate testcases.
-2. `./browser-test run tests/` (or filter glob like `tests/checkout-*.md`).
-3. Report results; link failures to `outputs/<TC>/latest/summary.md`.
+1. Use `./browser-test list` to see available cases.
+2. Run the requested file or folder with `./browser-test run ...`.
+3. Report the result summary. For failures, point to
+   `outputs/<TC-ID>/latest/summary.md`.
 
-## Fix a failing testcase
+## Fix A Failing Test
 
-> Test `003_checkout` is failing. Fix it.
+User: "Fix test TC-..." or "checkout test is failing."
 
-LLM should:
-1. Read `outputs/TC-003/latest/summary.md`, `stepN-diff.txt`,
-   `console-errors.log`, `final-annotated.png` (in that order).
-2. Re-explore the failing step live to confirm new selector/wait.
-3. Patch testcase. `validate` + `run`. Stop if blocked (login expired,
-   captcha, site down) — report, never fabricate.
+1. Read `summary.md`, then diff/screenshot/console artifacts in the order named
+   by `docs/REFERENCE.md`.
+2. Re-explore only the failing behavior.
+3. Patch the testcase from intent; do not rewrite unrelated steps.
+4. Validate and run. Stop and report if blocked by auth, captcha, seed, outage,
+   or permissions.
 
-## Audit coverage
+## Authenticated Flow
 
-> Which modules of the project don't have IT yet?
+User: "User should already be logged in."
 
-LLM should:
-1. `./browser-test coverage` — if `coverage.map` exists, this reports covered
-   features, gaps, and a coverage %. (Copy `coverage.map.example` to start.)
-2. Otherwise `./browser-test list` to enumerate covered modules and compare with
-   the project's route/feature list (ask the user if unknown).
-3. Report gaps. Do NOT write new tests unless asked.
+1. Check for an existing state/profile/session path.
+2. If missing, choose the lightest auth strategy from `AGENTS.md`; use the
+   agent-browser core guide for exact commands.
+3. Reference the path in frontmatter (`state: ...`, `session_name: ...`, or
+   `profile: ...`). Never print or commit state contents.
+4. Test only the requested business flow. Do not add login/signup setup unless
+   auth is the subject.
 
-## Update after UI change
+## Coverage Or History
 
-> Login page changed the "Email" field to "Username". Update tests.
+User: "What is covered?", "What is flaky?", "What failed recently?"
 
-LLM should:
-1. `rg -l "Email" tests/` to find affected testcases.
-2. Re-explore live to confirm new selector.
-3. Patch + `validate` + `run`. Stop on ambiguity, ask user.
+- Coverage: run `./browser-test coverage`.
+- Recent runs: run `./browser-test history [<TC-ID>]`.
+- Flake score: run `./browser-test flaky`.
+- Report findings only. Do not create tests unless asked.
 
-## Inspect history
+## UI Change
 
-> Which tests failed the most this past week?
+User: "The UI changed; update tests."
 
-LLM should:
-1. `./browser-test history` (all) or per `<TC-ID>` for recent runs + flake %.
-2. `./browser-test flaky` to score oscillating flows and get quarantine advice.
-3. Summarise pass/fail counts; suggest quarantining genuinely flaky tests until
-   the root cause (usually a missing signal-based wait) is healed.
+1. Search affected test files with `rg`.
+2. Re-explore the changed UI.
+3. Patch only affected locators/assertions.
+4. Validate and run.
 
-## Long-running or repeated-action tests
+## Long Or Repeated Tests
 
-> Reload the page 1000 times / run this for 30 minutes.
+User: "Reload 1000 times" or "run for 30 minutes."
 
-LLM should:
-1. Note that each step has a 30 s budget; a giant loop in one step will time out
-   with class `timing`.
-2. Prefer splitting the loop across steps (bounded batches) for progress + per-
-   batch diagnosis; otherwise set `timeout_ms:` in frontmatter (e.g. `1800000`).
-3. Keep soak/stress tests out of the PR gate — run them on their own file/
-   schedule. Full guidance: `docs/REFERENCE.md → Long-running / repeated-action
-   tests`.
+- Default budget is 30 seconds per step.
+- Prefer bounded batches across steps.
+- Use `timeout_ms` only when the work truly belongs in one step.
+- Keep soak/stress tests outside the PR gate.
 
-## Write a test that needs the user already logged in
+## Refuse Or Redirect
 
-> Write IT for the checkout flow. The user should already be authenticated.
+Do not comply with requests to:
 
-LLM should:
-1. Check whether a saved auth state exists: `ls state/`.
-2. If none exists: create auth with the lightest suitable mechanism: saved
-   state, `session_name`, Chrome `profile`, or `agent-browser auth`. For saved
-   state, run login once and save it with `agent-browser --session "$SESSION"
-   state save state/checkout_user.auth.json`. Commit the filename only.
-3. Scaffold the new testcase with `./browser-test new <module> "<title>"`.
-4. Set `state: state/checkout_user.auth.json` in the frontmatter — the browser
-   starts authenticated; **no signup or login steps needed**.
-5. Explore the checkout flow live. Snapshot when the UI changes or before using
-   `@eN` refs; save durable locators where possible.
-6. Fill placeholders, validate, run. Report PASS + artifacts path.
-
-**Never** embed a full signup/login as Step 1 of a non-auth testcase. It adds
-15–20 s of network-dependent noise and creates an invisible dependency on the
-signup flow being stable.
-
-## What NOT to ask the skill
-
-- "Write a test that always passes." — violates the validator-enforced rules.
-- "Disable the validator / bypass `grep -q .` rule." — violates the validator-enforced rules.
-- "Use my password `xxx` here." — paste a cookies/state file path or use
-  `agent-browser auth` instead.
+- make a test always pass,
+- disable validator rules,
+- hide failures with `|| true`, weak grep, or weaker assertions,
+- place passwords/secrets directly in Markdown.
