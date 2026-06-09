@@ -27,6 +27,7 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 // Project root = parent of scripts/. All test/env/output paths resolve from here.
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const VERSION = "1.0.0";
+const CONTRACT_VERSION = 1; // bump when the testcase contract (frontmatter/step shape) changes incompatibly
 
 const ALLOWED_TECHNIQUES = new Set([
     "semantic_locator", "css_locator", "snapshot_ref", "network_route",
@@ -121,7 +122,9 @@ function parseScalar(v) {
     if (v === "null") return null;
     if (v === "true") return true;
     if (v === "false") return false;
-    if (/^\d+$/.test(v)) return Number(v);
+    // Only treat as a number when it round-trips exactly — keeps leading-zero
+    // values (postal codes, phone numbers, zero-padded ids) intact as strings.
+    if (/^\d+$/.test(v)) { const n = Number(v); return (String(n) === v && Number.isSafeInteger(n)) ? n : v; }
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v.slice(1, -1);
     if (v.startsWith("[") && v.endsWith("]")) {
         const body = v.slice(1, -1).trim();
@@ -342,6 +345,12 @@ class Runner {
         if (this.meta.headless === false) vars.AGENT_BROWSER_HEADED = "1";
         if (this.meta.color_scheme) vars.AGENT_BROWSER_COLOR_SCHEME = String(this.meta.color_scheme);
         vars.AGENT_BROWSER_DOWNLOAD_PATH = vars.DOWNLOAD_DIR;
+        // Keep agent-browser's own per-operation timeout in step with the per-step
+        // budget: its default is 25s, so a single long wait the user deliberately
+        // allowed (timeout_ms/-t > 30s) would otherwise be killed early. At/below
+        // 30s we leave agent-browser's tuned default — it sits just under the 30s
+        // IPC read limit, and raising it past 30s risks EAGAIN.
+        if (this.timeoutMs > 30000) vars.AGENT_BROWSER_DEFAULT_TIMEOUT = String(this.timeoutMs);
         return vars;
     }
 
@@ -451,7 +460,12 @@ class Runner {
                 const statePath = resolve(ROOT, String(this.meta.state));
                 if (!existsSync(statePath)) throw new Error(`State file not found: ${this.meta.state}`);
                 this.ab(["open", "about:blank"], { allowFail: true });
-                this.ab(["state", "load", String(statePath)], { allowFail: true });
+                // Auth is setup, not a soft step: a missing/expired/invalid state
+                // must surface as auth_env (blocked), never run unauthenticated.
+                const stateLoad = this.ab(["state", "load", String(statePath)], { allowFail: true });
+                if (stateLoad.error || stateLoad.status !== 0) {
+                    throw new Error(`could not load auth state ${this.meta.state} (expired or invalid) — re-establish login; do not run unauthenticated`);
+                }
             }
 
             for (let i = 0; i < this.tc.steps.length; i++) {
@@ -558,10 +572,15 @@ class Runner {
         const errors = this.ab(["errors"], { allowFail: true });
         const consoleErrors = errors.output || "";
         writeFileSync(join(this.runDir, "console-errors.log"), consoleErrors);
+        // `errors` captures uncaught exceptions only; `console` carries log/warn/
+        // error messages (e.g. a 5xx or failed fetch logged via console.error).
+        // Keep both so app_bug classification doesn't miss console-level signals.
+        const consoleMsgs = this.ab(["console"], { allowFail: true }).output || "";
+        writeFileSync(join(this.runDir, "console.log"), consoleMsgs);
         if (this.profiler) this.ab(["profiler", "stop", join(this.runDir, "profile.json")], { allowFail: true });
         if (this.failed) {
             const stepDef = this.tc.steps[this.failed.step - 1];
-            const triage = classifyError(this.failed.error, consoleErrors);
+            const triage = classifyError(this.failed.error, `${consoleErrors}\n${consoleMsgs}`);
             this.failed.class = triage.class;
             this.failed.hint = triage.hint;
             this.failed.intent = stepDef?.intent || "";
@@ -571,6 +590,7 @@ class Runner {
         const result = {
             schema_version: 2,
             runner_version: VERSION,
+            contract_version: CONTRACT_VERSION,
             tc_id: this.meta.id,
             title: this.meta.title || "",
             file: this.opts.file,
@@ -654,7 +674,10 @@ const TAUTOLOGY_GLOB = /^\*{1,2}(?:\/\*{1,2})*$/; // "*", "**", "**/**", ...
 const HARDCODED_URL = /https?:\/\/[^\s"'`)$]+/g;
 const URL_ALLOWLIST = /(?:agent-browser\.dev|github\.com\/vercel-labs\/agent-browser|localhost|127\.0\.0\.1|example\.(?:com|org|net))/;
 const HARDCODED_CRED = /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?token)\s*[=:]\s*["']?[A-Za-z0-9_\-./]{6,}/i;
-const HARDCODED_DATE = /\b\d{4}-\d{2}-\d{2}\b|\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b/i;
+// ISO date, or a month name adjacent to a day/year number. Requiring an adjacent
+// number avoids flagging ordinary prose like "you may continue".
+const MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December";
+const HARDCODED_DATE = new RegExp(`\\b\\d{4}-\\d{2}-\\d{2}\\b|\\b(?:${MONTHS})\\b[ ,]+\\d{1,4}\\b|\\b\\d{1,2}[ ,]+(?:${MONTHS})\\b`, "i");
 
 function v(rule, label, message, fix) { return { rule, label, message, fix }; }
 
@@ -1427,8 +1450,10 @@ function evalCommand() {
     const readVer = (p, re) => { try { return readFileSync(resolve(ROOT, p), "utf8").match(re)?.[1]?.trim() || null; } catch { return null; } };
     const pkgVer = readVer("package.json", /"version"\s*:\s*"([^"]+)"/);
     const skillVer = readVer("SKILL.md", /^version:\s*(.+)$/m);
+    const skillContract = readVer("SKILL.md", /^contract_version:\s*(.+)$/m);
     pkgVer == null || pkgVer === VERSION ? ok(`package.json matches VERSION (${VERSION})`) : bad("version", `package.json ${pkgVer} != runner ${VERSION}`);
     skillVer == null || skillVer === VERSION ? ok(`SKILL.md matches VERSION (${VERSION})`) : bad("version", `SKILL.md ${skillVer} != runner ${VERSION}`);
+    skillContract == null || skillContract === String(CONTRACT_VERSION) ? ok(`SKILL.md matches contract_version (${CONTRACT_VERSION})`) : bad("version", `SKILL.md contract_version ${skillContract} != runner ${CONTRACT_VERSION}`);
 
     console.log(`\neval: ${pass} passed, ${fail} failed`);
     return fail ? 1 : 0;
@@ -1707,6 +1732,11 @@ function discoverCommand(opts) {
     const ab = (abArgs, opts = {}) => {
         const res = spawnSync("agent-browser", ["--session", session, ...abArgs], {
             cwd: ROOT, encoding: "utf8", timeout: 30000, maxBuffer: 10 * 1024 * 1024,
+            // Exploration ingests live page content into the agent's context, so
+            // mark it as untrusted with agent-browser's boundary markers. An
+            // explicit env value still wins; locator extraction uses a fallback
+            // regex, so the markers don't disturb discover's parsing.
+            env: { AGENT_BROWSER_CONTENT_BOUNDARIES: "1", ...process.env },
         });
         if (!opts.allowFail && (res.error || res.status !== 0)) {
             const msg = (res.stderr || res.stdout || "").trim().split("\n").slice(-1)[0]
@@ -1919,7 +1949,7 @@ try {
         const count = (s) => collected.filter((r) => r.status === s).length;
         if (opts.ci) {
             const summaryObj = {
-                schema_version: 2, runner_version: VERSION,
+                schema_version: 2, runner_version: VERSION, contract_version: CONTRACT_VERSION,
                 total: collected.length, executed,
                 passed: count("pass"), failed: count("fail"), errored: count("error"), skipped: count("skipped"),
                 zero_executed: zeroExecuted || undefined,

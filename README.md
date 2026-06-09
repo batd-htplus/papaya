@@ -48,6 +48,22 @@ read natively by Claude Code / Codex). Optional: to nudge first-try compliance,
 point your agent's own rules file at it with one line (e.g. Cursor `.cursor/rules`,
 Cline `.clinerules`, Copilot `.github/copilot-instructions.md`): "Follow `AGENTS.md`."
 
+## Prerequisites
+
+Papaya drives the browser through `agent-browser`, so install it (and its Chrome)
+first — full guide at [agent-browser.dev/installation](https://agent-browser.dev/installation):
+
+```bash
+npm install -g agent-browser        # native Rust CLI (recommended)
+agent-browser install               # download Chrome for Testing (first run only)
+agent-browser install --with-deps   # Linux only: also install system deps
+agent-browser doctor                # verify install / daemon / Chrome
+```
+
+Also required: Node >= 18 and bash (`SKILL.md` → `requires`, which pins
+`agent-browser >= 0.27`). `scripts/setup.sh` re-checks all of these and prints the
+install hint if anything is missing.
+
 ## Install into a project
 
 ```bash
