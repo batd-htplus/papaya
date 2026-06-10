@@ -42,7 +42,6 @@ module: home
 session: 001_home
 env: env/env.yaml
 state: null
-data: null
 techniques: [semantic_locator, wait_text]
 expect:
   url: null
@@ -62,6 +61,7 @@ Rules:
 Optional fields:
 
 ```yaml
+data: null                 # data/<name>.yaml; keys become $shell_vars
 log_level: minimal
 viewport: "1280x720"
 headless: true
@@ -140,7 +140,8 @@ Always written: `summary.md`, `result.json`, `console-errors.log`,
 `console.log`, `final.png`, `final-annotated.png`.
 
 Conditional: `run.log`, `stepN-before.txt`, `stepN-after.txt`,
-`stepN-diff.txt`, `profile.json`.
+`stepN-diff.txt`, `profile.json`; on failure also `heal-brief.md`
+(intent + live snapshot for re-resolving the failed step).
 
 Failure debug order: `summary.md` -> `stepN-diff.txt` ->
 `final-annotated.png` -> `console-errors.log` -> `run.log`.
@@ -207,6 +208,10 @@ module | Feature name | optional-route-glob
 A feature counts as covered only when its matching testcase has a current
 passing run and is not quarantined. Failing, stale, never-run, or quarantined
 tests do not count as covered.
+
+If the feature declares a route glob, the test also has to have reached it:
+its last recorded final URL must match the glob. A passing test with no
+recorded final URL shows as `route-unverified` and does not count as covered.
 
 ## Flake And Quarantine
 

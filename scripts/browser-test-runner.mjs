@@ -25,7 +25,8 @@ function fileSha(path) {
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
 // Project root = parent of scripts/. All test/env/output paths resolve from here.
-const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
+// fileURLToPath, not URL.pathname: pathname keeps %-encoding (spaces, non-ASCII).
+const ROOT = resolve(dirname(SCRIPT_PATH), "..");
 const VERSION = "1.0.0";
 const CONTRACT_VERSION = 1; // bump when the testcase contract (frontmatter/step shape) changes incompatibly
 
@@ -233,7 +234,12 @@ function classifyError(error, consoleErrors = "") {
     if (/command not found|: not found$|enoent|no such file or directory|eacces|permission denied|operation not permitted|not writable|socket directory|not installed|cannot find module/.test(e)) {
         return { class: "env_error", hint: "Tooling/environment problem (missing binary, PATH, or permission). Run ./browser-test doctor; fix the runner host, not the test." };
     }
-    if (/state file not found|\b401\b|\b403\b|unauthor|login|auth|session expired/.test(e)) {
+    // FAIL: guards are authored assertions — match before auth_env so text like
+    // "FAIL: login form not rendered" is not misread as an auth problem.
+    if (/(^|\s)fail:/.test(e)) {
+        return { class: "assertion_drift", hint: "A step guard asserted a condition that did not hold. Re-explore the step; confirm whether the app changed or regressed." };
+    }
+    if (/state file not found|auth state|\b401\b|\b403\b|unauthori[sz]|not logged in|session expired|login failed/.test(e)) {
         return { class: "auth_env", hint: "Auth/state/seed problem. Re-establish login or fix env; do NOT fabricate. Stop and report blocked." };
     }
     // app_bug before selector_drift
@@ -248,10 +254,6 @@ function classifyError(error, consoleErrors = "") {
     }
     if (/mismatch|expected=|assert/.test(e)) {
         return { class: "assertion_drift", hint: "A declared expectation did not hold. Confirm with the director: real change, or a defect?" };
-    }
-    // explicit FAIL: guard → assertion_drift
-    if (/(^|\s)fail:/.test(e)) {
-        return { class: "assertion_drift", hint: "A step guard asserted a condition that did not hold. Re-explore the step; confirm whether the app changed or regressed." };
     }
     return { class: "unknown", hint: "Read summary.md → stepN-diff.txt → final-annotated.png → console-errors.log in order." };
 }
@@ -375,12 +377,32 @@ class Runner {
         return vars;
     }
 
+    // Frontmatter-derived AGENT_BROWSER_* must also reach runner-spawned calls:
+    // the browser is often launched by applySettings/state-load, not step bash.
+    abEnv() {
+        if (!this._abEnv) {
+            const picked = {};
+            const v = this.vars();
+            for (const k of Object.keys(v)) {
+                if (k.startsWith("AGENT_BROWSER_")) picked[k] = String(v[k]);
+            }
+            this._abEnv = { ...process.env, ...picked };
+        }
+        return this._abEnv;
+    }
+
     ab(args, options = {}) {
+        // untrustedContent: page content that lands in agent-read artifacts
+        // (heal-brief, diffs) gets boundary markers; ambient env value wins.
+        const env = options.untrustedContent
+            ? { AGENT_BROWSER_CONTENT_BOUNDARIES: "1", ...this.abEnv() }
+            : this.abEnv();
         const res = spawnSync("agent-browser", ["--session", this.session, ...args], {
             cwd: ROOT,
             encoding: "utf8",
             timeout: this.timeoutMs,
             maxBuffer: 20 * 1024 * 1024,
+            env,
         });
         const out = `${res.stdout || ""}${res.stderr || ""}`;
         if (out) this.appendLog(out);
@@ -435,12 +457,12 @@ class Runner {
     }
 
     captureSnapshot() {
-        const res = this.ab(["snapshot", "-i"], { allowFail: true });
+        const res = this.ab(["snapshot", "-i"], { allowFail: true, untrustedContent: true });
         return res.output || "";
     }
 
     captureDiff() {
-        const res = this.ab(["diff", "snapshot"], { allowFail: true });
+        const res = this.ab(["diff", "snapshot"], { allowFail: true, untrustedContent: true });
         return res.output || "";
     }
 
@@ -470,6 +492,9 @@ class Runner {
 
         this.setup();
         const started = Date.now();
+        if (!this.opts.ci) {
+            console.log(`▶ ${this.meta.id}: ${this.meta.title || basename(this.opts.file)} (log=${this.logLevel})`);
+        }
         try {
             vars = this.vars();
             this.ab(["close"], { allowFail: true });
@@ -590,13 +615,13 @@ class Runner {
     finish(durationMs) {
         this.ab(["screenshot", "--full", join(this.runDir, "final.png")], { allowFail: true });
         this.ab(["screenshot", "--annotate", join(this.runDir, "final-annotated.png")], { allowFail: true });
-        const errors = this.ab(["errors"], { allowFail: true });
+        const errors = this.ab(["errors"], { allowFail: true, untrustedContent: true });
         const consoleErrors = errors.output || "";
         writeFileSync(join(this.runDir, "console-errors.log"), consoleErrors);
         // `errors` captures uncaught exceptions only; `console` carries log/warn/
         // error messages (e.g. a 5xx or failed fetch logged via console.error).
         // Keep both so app_bug classification doesn't miss console-level signals.
-        const consoleMsgs = this.ab(["console"], { allowFail: true }).output || "";
+        const consoleMsgs = this.ab(["console"], { allowFail: true, untrustedContent: true }).output || "";
         writeFileSync(join(this.runDir, "console.log"), consoleMsgs);
         if (this.profiler) this.ab(["profiler", "stop", join(this.runDir, "profile.json")], { allowFail: true });
         if (this.failed) {
@@ -910,7 +935,7 @@ function collectValidation(tc, file) {
         }
         if (u === "") {
             errors.push(v("expect_tautology", "frontmatter",
-                "expect.url is an empty string (matches/enchecks nothing)",
+                "expect.url is an empty string — it asserts nothing",
                 "set a real URL glob or url: null"));
         }
     }
@@ -1203,7 +1228,14 @@ function saveQuarantineEntries(entries) {
 
 function quarantineCommand(argv) {
     const args = argv.slice(3);
-    const pos = args.filter((a) => !a.startsWith("-"));
+    // Skip flag values too: in `add --reason why TC-001`, "why" is not the TC-ID.
+    const valueFlags = new Set(["--reason", "--days"]);
+    const pos = [];
+    for (let i = 0; i < args.length; i++) {
+        if (valueFlags.has(args[i])) { i++; continue; }
+        if (args[i].startsWith("-")) continue;
+        pos.push(args[i]);
+    }
     const action = pos[0] || "list";
     const id = pos[1];
     const reasonIdx = args.indexOf("--reason");
@@ -1394,6 +1426,8 @@ function healCommand(argv) {
     const session = tc.meta.session;
     const snap = spawnSync("agent-browser", ["--session", session, "snapshot", "-i"], {
         cwd: ROOT, encoding: "utf8", maxBuffer: 20 * 1024 * 1024,
+        // Live page content goes into the agent's context — mark untrusted.
+        env: { AGENT_BROWSER_CONTENT_BOUNDARIES: "1", ...process.env },
     });
     const live = `${snap.stdout || ""}${snap.stderr || ""}`.trim();
     const out = [
@@ -1493,13 +1527,16 @@ function coverageCommand() {
     console.log(`${"COV".padEnd(4)} ${"MODULE".padEnd(14)} ${"TESTS".padEnd(6)} FEATURE`);
     for (const feat of features) {
         const moduleHits = byModule[feat.module] || [];
-        // If the feature declares a route, a module test counts for THIS feature
-        // only when its recorded final URL matches the route glob. Tests with no
-        // recorded final URL fall back to module-level inclusion (backward compat).
+        // Routed feature: covered only by a pass whose recorded final URL matches
+        // the glob. No recorded URL → shown as route-unverified (⚠), not covered.
         const hits = feat.route
-            ? moduleHits.filter((t) => { const fu = info.get(t.id)?.finalUrl; return fu ? globMatch(feat.route, fu) : true; })
+            ? moduleHits.filter((t) => { const fu = info.get(t.id)?.finalUrl; return !fu || globMatch(feat.route, fu); })
             : moduleHits;
-        const states = hits.map(stateOf);
+        const states = hits.map((t) => {
+            const s = stateOf(t);
+            if (s === "pass" && feat.route && !info.get(t.id)?.finalUrl) return "route-unverified";
+            return s;
+        });
         const isCovered = states.includes("pass");
         const hasTests = hits.length > 0;
         let mark;
@@ -1565,6 +1602,9 @@ function evalCommand() {
         ["Final URL mismatch. expected=**/x actual=/y", "assertion_drift"],
         ["Final text assertion failed: page did not contain expected text \"Saved\"", "assertion_drift"],
         ["State file not found: state/admin.auth.json", "auth_env"],
+        // FAIL: guard with auth-ish words must stay assertion_drift, not auth_env.
+        ["FAIL: login form not rendered", "assertion_drift"],
+        ["could not load auth state state/user.auth.json (expired or invalid) — re-establish login; do not run unauthenticated", "auth_env"],
     ];
     for (const [err, want] of classCases) {
         const got = classifyError(err).class;
@@ -1628,14 +1668,13 @@ function evalCommand() {
 
 // --- scaffolder (new) ---
 
+// Scaffold stays terse: the contract lives in AGENTS.md, not in every testcase.
 function scaffoldBody(id, module, session, title, { stateFile = null, dataFile = null } = {}) {
     const authHint = stateFile
-        ? `\n<!-- Auth: starts authenticated via ${stateFile}.\n` +
-          `     Create once: run a login/signup test, then:\n` +
-          `     agent-browser --session <session> state save ${stateFile} -->\n`
+        ? `\n<!-- Auth via ${stateFile} — create once: agent-browser --session <s> state save ${stateFile} -->\n`
         : "";
     const dataHint = dataFile
-        ? `\n<!-- Data: typed values in ${dataFile}; referenced as $variable_name in bash steps. -->\n`
+        ? `\n<!-- Data: keys in ${dataFile} become $shell_vars in steps. -->\n`
         : "";
     return `---
 id: ${id}
@@ -1653,9 +1692,6 @@ expect:
 
 # ${id}: ${title}
 ${authHint}${dataHint}
-## Objective
-<one sentence: what behaviour does this verify?>
-
 ## Steps
 
 ### 1. <imperative step name>
@@ -1664,15 +1700,10 @@ ${authHint}${dataHint}
 \`\`\`bash
 agent-browser --session "$SESSION" open "$base_url"
 agent-browser --session "$SESSION" wait --text "<FILL: stable text you observed>"
-# Use durable locators for actions, e.g.:
-# agent-browser --session "$SESSION" find role button click --name "<FILL: button name>"
-# agent-browser --session "$SESSION" find first '[data-qa="<FILL>"]' click
 \`\`\`
 
-<!-- add more steps; each: intent + expect bullets, then a bash block ending in a
-     signal-based wait or assertion. Use snapshot -i while exploring and before
-     @eN refs; prefer stable test attributes and semantic locators in saved tests.
-     Never sleep, never || true. -->
+<!-- More steps: intent + expect, then proven bash ending in a wait/find/is
+     signal. Durable locators only. Never sleep, never || true. -->
 `;
 }
 
@@ -1723,22 +1754,11 @@ async function newCommand(argv) {
     }
 
     writeFileSync(file, scaffoldBody(id, module, session, title, { stateFile, dataFile }));
-    console.log(`\nCreated tests/${session}.md (${id}).`);
-
-    if (stateFile) {
-        console.log(`\nAuth setup needed (one-time):`);
-        console.log(`  1. Run the login/signup flow once to get an authenticated browser session`);
-        console.log(`  2. agent-browser --session <session> state save ${stateFile}`);
-        console.log(`  (${stateFile} is gitignored — never committed)`);
-    }
-    if (dataFile) {
-        console.log(`\nFill ${dataFile} with values; reference as $key_name in bash steps.`);
-    }
-    console.log(`\nExplore live first (snapshot to understand the UI, semantic locators for saved commands):`);
-    console.log(`  ./browser-test discover <url>               # list all testable attributes`);
-    console.log(`  agent-browser --session ${session} snapshot -i`);
-    console.log(`\nThen validate and run:`);
-    console.log(`  ./browser-test validate tests/${session}.md && ./browser-test run tests/${session}.md`);
+    console.log(`Created tests/${session}.md (${id}).`);
+    if (stateFile) console.log(`Auth (one-time): agent-browser --session <s> state save ${stateFile}   # gitignored`);
+    if (dataFile) console.log(`Data: fill ${dataFile}; keys become $shell_vars in steps.`);
+    console.log(`Explore:  ./browser-test discover <url>`);
+    console.log(`Then:     ./browser-test validate tests/${session}.md && ./browser-test run tests/${session}.md`);
     return 0;
 }
 
@@ -1756,7 +1776,8 @@ function duplicateIds(files) {
 // --- parallel execution (-j) ---
 function resolveJobs(raw) {
     if (raw == null) return 1;
-    if (String(raw).toLowerCase() === "auto") return Math.max(1, cpus().length);
+    // 'auto' caps at 4: each job is a full browser, not a thread. -j N is honored as given.
+    if (String(raw).toLowerCase() === "auto") return Math.max(1, Math.min(4, cpus().length));
     const n = Math.floor(Number(raw));
     return Number.isFinite(n) && n >= 1 ? n : 1;
 }
@@ -1774,6 +1795,7 @@ function workerArgs(file, opts) {
 
 function runWorkerFile(item, opts) {
     return new Promise((resolveP) => {
+        const startedAt = Date.now();
         const child = spawn(process.execPath, [SCRIPT_PATH, ...workerArgs(item.file, opts)], {
             cwd: ROOT, env: { ...process.env, PAPAYA_WORKER: "1" },
         });
@@ -1782,10 +1804,18 @@ function runWorkerFile(item, opts) {
         child.stderr.on("data", (d) => { err += d; });
         const fail = (msg) => resolveP({ tc_id: item.id, title: item.title, file: item.file, status: "error", duration_ms: 0, failed: { class: "worker_error", error: cleanText(msg) } });
         child.on("error", (e) => fail(e.message));
-        child.on("close", () => {
+        child.on("close", (code) => {
             const rf = resolve(ROOT, "outputs", item.id, "latest", "result.json");
-            try { if (existsSync(rf)) return resolveP(JSON.parse(readFileSync(rf, "utf8"))); } catch { }
-            fail(err.trim().split(/\r?\n/).slice(-1)[0] || "worker produced no result.json");
+            // A child that crashed before finish() leaves 'latest' at a previous
+            // run; reading that stale result.json would be a false green.
+            try {
+                if (existsSync(rf)) {
+                    const r = JSON.parse(readFileSync(rf, "utf8"));
+                    if (Date.parse(r.timestamp) >= startedAt - 1000) return resolveP(r);
+                }
+            } catch { }
+            fail(err.trim().split(/\r?\n/).slice(-1)[0]
+                || `worker exited ${code} without writing a fresh result.json`);
         });
     });
 }
@@ -1969,17 +1999,13 @@ function discoverCommand(opts) {
                 console.log(`  find role ${role} click --name "${it.val}"`);
             }
         }
-        if (!items.length) console.log("\n(no data-qa/placeholder/text locators found — see snapshot below)");
-
-        // Always print the interactive snapshot so @eN refs are available too.
-        const snap = ab(["snapshot", "-i"], { allowFail: true });
-        if (snap) {
-            console.log("\n── interactive snapshot  (use @eN refs while this session stays open):");
-            console.log(snap);
+        if (!items.length) {
+            console.log("\n(no data-qa/placeholder/text locators found — falling back to the interactive snapshot)");
+            const snap = ab(["snapshot", "-i"], { allowFail: true });
+            if (snap) console.log(snap);
         }
-        console.log(`Continue exploring with:  agent-browser --session ${session} snapshot -i`);
-        console.log(`Close this discover browser with:  agent-browser --session ${session} close`);
-        console.log("In testcase bash blocks, prefix saved commands with:  agent-browser --session \"$SESSION\"");
+        console.log(`\nSnapshot/@eN refs: agent-browser --session ${session} snapshot -i   (close: ... ${session} close)`);
+        console.log("In saved tests, prefix every command with:  agent-browser --session \"$SESSION\"");
     } catch (err) {
         console.error(`discover failed: ${err.message}`);
         return 1;
