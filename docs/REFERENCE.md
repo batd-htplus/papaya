@@ -19,12 +19,12 @@ scripts/                    runner and setup
 docs/                       reference, usage, CI notes
 eval/golden/                validator regression fixtures
 tests/<NNN>_<module>.md     testcases
+tests/data/<name>.yaml      testcase input data, committed
+tests/data/<name>.local.yaml local data overrides, gitignored
+tests/state/<name>.json     auth state, gitignored secret
+tests/fixtures/             upload/download fixtures
 env/env.yaml                project config, committed
 env/env.local.yaml          local secrets/overrides, gitignored
-data/<name>.yaml            testcase input data, committed
-data/<name>.local.yaml      local data overrides, gitignored
-state/<name>.json           auth state, gitignored secret
-fixtures/                   upload/download fixtures
 outputs/<TC-ID>/...         run artifacts, gitignored
 coverage.map                tracked feature inventory
 quarantine.json             tracked skip-list with expiry
@@ -64,7 +64,7 @@ Rules:
 Optional fields:
 
 ```yaml
-data: null                 # data/<name>.yaml; keys become $shell_vars
+data: null                 # tests/data/<name>.yaml; keys become $shell_vars
 log_level: minimal
 viewport: "1280x720"
 headless: true
@@ -82,10 +82,10 @@ profiler: false
 |-------|---------|---------|
 | `env/env.yaml` | project config, no secrets | yes |
 | `env/env.local.yaml` | local secrets/overrides | no |
-| `data/<name>.yaml` | values typed by a testcase | yes |
-| `data/<name>.local.yaml` | local data overrides | no |
-| `state/<name>.json` | saved auth state | no |
-| `fixtures/<file>` | files used by upload/download flows | yes |
+| `tests/data/<name>.yaml` | values typed by a testcase | yes |
+| `tests/data/<name>.local.yaml` | local data overrides | no |
+| `tests/state/<name>.json` | saved auth state | no |
+| `tests/fixtures/<file>` | files used by upload/download flows | yes |
 
 Precedence: ambient env < `env` < `env.local` < `data` < `data.local`.
 The runner also sets `SESSION`, `TC_ID`, `RUN_DIR`, and `DOWNLOAD_DIR`.
@@ -128,7 +128,7 @@ Declare the strategy; let agent-browser own the mechanics:
 | Case | Frontmatter |
 |------|-------------|
 | login/signup is the test | `state: null` |
-| normal authenticated flow | `state: state/user.auth.json` |
+| normal authenticated flow | `state: tests/state/user.auth.json` |
 | local repeated debugging | `session_name: project-user` |
 | SSO or existing browser login | `profile: Default` or path |
 

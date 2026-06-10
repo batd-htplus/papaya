@@ -83,7 +83,7 @@ Pick the lightest strategy:
 | Need | Use |
 |------|-----|
 | testing login/signup | `state: null`, auth inside the test |
-| ordinary authenticated flow | `state: state/<user>.auth.json` |
+| ordinary authenticated flow | `state: tests/state/<user>.auth.json` |
 | local repeated debugging | `session_name: <project-user>` |
 | existing browser login / SSO | `profile: <Chrome profile>` |
 | credentials must not hit logs | `agent-browser auth` vault |

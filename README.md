@@ -25,10 +25,10 @@ the point is the agent and the flows it writes.
 | `eval/`          | maintainer    | golden fixtures for `./browser-test eval` |
 | `scripts/`       | runner internals | runner mjs + setup |
 | `tests/`         | project       | one `.md` testcase per file |
+| `tests/data/`    | project       | test inputs (committed) + local overrides |
+| `tests/state/`   | project       | saved auth state (gitignored, secrets) |
+| `tests/fixtures/` | project      | upload/download files |
 | `env/`           | project       | defaults (committed) + local overrides (gitignored) |
-| `data/`          | project       | test inputs (committed) + local overrides |
-| `state/`         | project       | saved auth state (gitignored, secrets) |
-| `fixtures/`      | project       | upload/download files |
 | `coverage.map.example` | project | starter feature inventory; copy to `coverage.map` |
 | `outputs/`       | runtime       | run artifacts (gitignored) |
 
@@ -88,8 +88,7 @@ install hint if anything is missing.
 rsync -a \
   --exclude '.git' --exclude '.gitignore' --exclude 'README.md' \
   --exclude 'package.json' --exclude 'LICENSE' \
-  --exclude 'tests' --exclude 'data' --exclude 'state' \
-  --exclude 'outputs' --exclude 'fixtures' \
+  --exclude 'tests' --exclude 'outputs' \
   --exclude 'env/env.yaml' --exclude 'env/env.local.yaml' --exclude 'coverage.map' \
   path/to/papaya/ <your-project>/
 cd <your-project>
@@ -97,6 +96,11 @@ bash scripts/setup.sh                     # scaffold env/coverage from examples,
 $EDITOR env/env.yaml                      # set project base_url etc.
 $EDITOR env/env.local.yaml                # set local secrets if any
 ```
+
+Every path resolves relative to the skill's own folder, so to keep your project
+root clean you can nest the whole skill in one subfolder — copy into
+`<your-project>/e2e/` instead and run `./e2e/browser-test ...` (or `cd e2e`).
+Nothing else changes.
 
 `setup.sh` does local checks and scaffolds only — never `sudo`, never
 global installs. It also merges Papaya's required ignore entries into your

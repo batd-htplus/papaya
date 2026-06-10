@@ -82,7 +82,7 @@ jobs:
         with: { report_paths: results.xml }
 ```
 
-Auth in CI: prefer a saved `state/*.json` produced once and supplied as an
+Auth in CI: prefer a saved `tests/state/*.json` produced once and supplied as an
 encrypted secret, or `agent-browser auth`. Never commit credentials or state.
 
 ## Trust model — preventing un-run / wrong testcases

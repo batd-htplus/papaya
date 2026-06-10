@@ -51,7 +51,7 @@ if [[ "$osname" == "Linux" && ( "$arch" == "aarch64" || "$arch" == "arm64" ) ]];
 fi
 
 echo "==> Creating directories"
-mkdir -p tests data env state outputs fixtures
+mkdir -p tests tests/data tests/state tests/fixtures env outputs
 
 echo "==> Config"
 default_example="env/env.yaml.example"
@@ -76,7 +76,7 @@ fi
 echo "==> Encryption key for auth state"
 if [[ -z "${AGENT_BROWSER_ENCRYPTION_KEY:-}" ]]; then
     echo "    suggest: export AGENT_BROWSER_ENCRYPTION_KEY=\$(openssl rand -hex 32)"
-    echo "    (encrypts state/*.json at rest; put in shell rc / CI secret)"
+    echo "    (encrypts tests/state/*.json at rest; put in shell rc / CI secret)"
 fi
 
 echo "==> .gitignore"
@@ -87,9 +87,9 @@ if [[ ! -f .gitignore ]] || ! grep -q "Papaya skill" .gitignore 2>/dev/null; the
 outputs/
 env/*.local.yaml
 env/*.local.yml
-data/*.local.yaml
-data/*.local.yml
-state/*.json
+tests/data/*.local.yaml
+tests/data/*.local.yml
+tests/state/*.json
 profile.json
 # === end Papaya ===
 EOF

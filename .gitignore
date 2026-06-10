@@ -2,9 +2,9 @@
 outputs/
 env/*.local.yaml
 env/*.local.yml
-data/*.local.yaml
-data/*.local.yml
-state/*.json
+tests/data/*.local.yaml
+tests/data/*.local.yml
+tests/state/*.json
 profile.json
 # === end Papaya ===
 

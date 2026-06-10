@@ -5,7 +5,7 @@ module: checkout
 session: 001_checkout
 env: env/env.yaml
 state: null
-data: data/checkout.yaml
+data: tests/data/checkout.yaml
 techniques: [semantic_locator, wait_text]
 expect:
   url: "**/checkout-complete.html"
@@ -15,12 +15,12 @@ expect:
 # TC-001: Successful checkout flow (SauceDemo)
 
 ## Objective
-A user logs in with credentials from `data/`, adds a product to cart, and completes
+A user logs in with credentials from `tests/data/`, adds a product to cart, and completes
 the checkout on the site configured in `env/`.
 
 Three components demonstrated:
 - **env** → `$base_url` (https://www.saucedemo.com)
-- **data** → `$username`, `$password`, `$first_name`, `$last_name`, `$postal_code` from `data/checkout.yaml`
+- **data** → `$username`, `$password`, `$first_name`, `$last_name`, `$postal_code` from `tests/data/checkout.yaml`
 - No `state` — credentials are public, login is inline
 
 ## Steps
@@ -41,7 +41,7 @@ agent-browser --session "$SESSION" wait --text "Your Cart"
 agent-browser --session "$SESSION" wait --text "Sauce Labs Backpack"
 ```
 
-### 2. Enter checkout and fill info from data/
+### 2. Enter checkout and fill info from tests/data/
 - intent: open checkout form, fill name + postal code from data, proceed to summary
 - expect: summary page with "Payment Information" visible
 ```bash

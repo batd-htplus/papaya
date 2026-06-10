@@ -1345,7 +1345,7 @@ function collectValidation(tc, file) {
         if (VALIDATOR_POLICY.embeddedAuthMarkers.test(allCode)) {
             warnings.push(v("embedded_auth_flow", "steps",
                 "signup/login sequence found in a non-auth module — embed auth as state: frontmatter instead",
-                "save auth once: agent-browser --session <s> state save state/<user>.auth.json, then set state: state/<user>.auth.json in frontmatter"));
+                "save auth once: agent-browser --session <s> state save tests/state/<user>.auth.json, then set state: tests/state/<user>.auth.json in frontmatter"));
         }
     }
 
@@ -2114,9 +2114,9 @@ async function newCommand(argv) {
         const rl = createInterface({ input: process.stdin, output: process.stdout });
         try {
             const auth = await rl.question(`Does this test need an authenticated user? [y/N] `);
-            if (/^y/i.test(auth.trim())) stateFile = `state/${module}_user.auth.json`;
-            const data = await rl.question(`Does this test use input data (data/*.yaml)? [y/N] `);
-            if (/^y/i.test(data.trim())) dataFile = `data/${module}.yaml`;
+            if (/^y/i.test(auth.trim())) stateFile = `tests/state/${module}_user.auth.json`;
+            const data = await rl.question(`Does this test use input data (tests/data/*.yaml)? [y/N] `);
+            if (/^y/i.test(data.trim())) dataFile = `tests/data/${module}.yaml`;
         } finally {
             rl.close();
         }

@@ -5,7 +5,7 @@ module: datamissing
 session: 001_datamissing
 env: env/env.yaml
 state: null
-data: data/does_not_exist.yaml
+data: tests/data/does_not_exist.yaml
 techniques: [wait_text]
 expect:
   url: null
