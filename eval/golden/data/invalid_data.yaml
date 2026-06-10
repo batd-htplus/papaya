@@ -1,0 +1,4 @@
+# Intentionally malformed — golden fixture for the data_invalid warning.
+bad-key: value
+this line is not a mapping
+username: ok

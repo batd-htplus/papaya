@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import {
     appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync,
-    readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync,
-    writeSync,
+    readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync,
+    writeFileSync, writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -16,17 +16,70 @@ import { createInterface } from "node:readline/promises";
  * @module browser-test-runner
  */
 
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const ROOT = resolve(dirname(SCRIPT_PATH), "..");
+
+/**
+ * @typedef {{ id: string, title: string, module: string, session: string, env: string, state: string|null, data: string|null, techniques: string[], expect: { url: string|null, text: string|null }, viewport?: string, headless?: boolean, timeout_ms?: number, log_level?: string, device?: string, color_scheme?: string, profile?: string, session_name?: string, profiler?: boolean, [key: string]: any }} Frontmatter
+ */
+
+/**
+ * @typedef {{ name: string, code: string, intent: string, expect: string }} Step
+ */
+
+/**
+ * @typedef {{ md: string, meta: Frontmatter, steps: Step[] }} TestCase
+ */
+
+/**
+ * @typedef {{ tc_id: string, title: string, status: string, duration_ms: number, file?: string, failed?: FailureInfo|null, source_sha?: string|null, final_url?: string|null, session?: string, steps?: RunStepRecord[], artifacts?: string, timestamp?: string }} RunResult
+ */
+
+/**
+ * @typedef {{ step?: number, name?: string, error: string, class?: string, hint?: string, intent?: string }} FailureInfo
+ */
+
+/**
+ * @typedef {{ step: number, name: string, status: "pass"|"fail", duration_ms: number, error?: string }} RunStepRecord
+ */
+
+/**
+ * @typedef {{ class: string, hint: string }} ClassificationResult
+ */
+
+/**
+ * @typedef {{ rule: string, label: string, message: string, fix: string }} ValidationError
+ */
+
+/**
+ * @typedef {{ command: string, file: string, verbose: boolean, noTeardown: boolean, noDiff: boolean, profiler: boolean, report: string, jobs?: string|number, session?: string, env?: string, timeout?: number, logLevel?: string, ci?: boolean, junit?: string, strict?: boolean, includeQuarantined?: boolean, reason?: string, days?: number }} RunOptions
+ */
+
+/**
+ * @typedef {{ tc_id: string, ts: string, status: string, duration_ms: number, class: string|null, step: number|null, commit: string|null, runner_version: string }} HistoryRecord
+ */
+
+/**
+ * @typedef {{ id: string, reason: string, added: string|null, expires: string|null, commit: string|null }} QuarantineEntry
+ */
+
+/**
+ * @typedef {{ hasSession: boolean, sessionValue: string|null, command: string, args: string[], line: string, codePart: string, hasInlineComment: boolean }} AgentBrowserInvocation
+ */
+
+/**
+ * @typedef {{ raw: string, line: string, codePart: string, calls: AgentBrowserInvocation[] }} AnalyzedLine
+ */
+
+/**
+ * @param {string} path
+ * @returns {string|null}
+ */
 function fileSha(path) {
     try { return createHash("sha256").update(readFileSync(path)).digest("hex").slice(0, 12); }
     catch { return null; }
 }
 
-// Absolute path to this script — re-spawned as a per-testcase worker in -j mode.
-const SCRIPT_PATH = fileURLToPath(import.meta.url);
-
-// Project root = parent of scripts/. All test/env/output paths resolve from here.
-// fileURLToPath, not URL.pathname: pathname keeps %-encoding (spaces, non-ASCII).
-const ROOT = resolve(dirname(SCRIPT_PATH), "..");
 const VERSION = "1.0.0";
 const CONTRACT_VERSION = 1; // bump when the testcase contract (frontmatter/step shape) changes incompatibly
 
@@ -40,6 +93,10 @@ const LOG_LEVELS = new Set(["minimal", "normal", "verbose"]);
 
 const ANSI_RE = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
 const XML_ILLEGAL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+/**
+ * @param {*} s
+ * @returns {string}
+ */
 function cleanText(s) {
     return String(s ?? "").replace(ANSI_RE, "").replace(XML_ILLEGAL_RE, "");
 }
@@ -48,6 +105,7 @@ const HISTORY_FILE = () => resolve(ROOT, "outputs", "history.jsonl");
 const QUARANTINE_FILE = () => resolve(ROOT, "quarantine.json");
 const FLAKE_WINDOW = 20;        // recent runs considered
 const FLAKE_THRESHOLD = 0.34;   // >= ~1/3 pass/fail flips ⇒ flaky
+const RUN_RETENTION = Number(process.env.PAPAYA_KEEP_RUNS || 10); // run dirs kept per testcase
 
 function usage() {
     console.log(`browser-test runner v${VERSION}
@@ -79,13 +137,17 @@ Options for run:
       --no-teardown        Keep browser session open
       --no-diff            Disable snapshot diff around steps
       --profiler           Capture Chrome profile to profile.json
-      --report <file>      Also write result JSON to this path
+      --report <file>      Also write result JSON to this path (single-file runs)
 `);
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {RunOptions & { command: string }}
+ */
 function parseArgs(argv) {
     if (argv[2] === "-h" || argv[2] === "--help" || !argv[2]) { usage(); process.exit(0); }
-    const out = { command: argv[2], file: "", verbose: false, noTeardown: false, noDiff: false, profiler: false, report: "" };
+    const out = /** @type {RunOptions & { command: string }} */({ command: argv[2], file: "", verbose: false, noTeardown: false, noDiff: false, profiler: false, report: "" });
     const args = argv.slice(3);
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -111,13 +173,17 @@ function parseArgs(argv) {
         // Consumed by the quarantine subcommand (parsed there from argv); accept
         // here so the global parser doesn't reject them.
         if (a === "--reason") { out.reason = args[++i]; continue; }
-        if (a === "--days") { out.days = args[++i]; continue; }
+        if (a === "--days") { out.days = /** @type {any} */ (args[++i]); continue; }
         if (a.startsWith("-")) throw new Error(`Unknown option: ${a}`);
         out.file = a;
     }
     return out;
 }
 
+/**
+ * @param {string} v
+ * @returns {any}
+ */
 function parseScalar(v) {
     v = String(v ?? "").trim();
     if (v === "null") return null;
@@ -134,6 +200,10 @@ function parseScalar(v) {
     return v;
 }
 
+/**
+ * @param {string} line
+ * @returns {string}
+ */
 function stripComment(line) {
     let inQuote = null;
     for (let i = 0; i < line.length; i++) {
@@ -150,6 +220,10 @@ function stripComment(line) {
     return line;
 }
 
+/**
+ * @param {string} text
+ * @returns {Record<string, any>}
+ */
 function parseSimpleYaml(text) {
     const obj = {};
     let parent = null;
@@ -174,6 +248,10 @@ function parseSimpleYaml(text) {
     return obj;
 }
 
+/**
+ * @param {string} file
+ * @returns {Record<string, any>}
+ */
 function readEnv(file) {
     if (!file || !existsSync(file)) return {};
     return parseSimpleYaml(readFileSync(file, "utf8"));
@@ -181,8 +259,13 @@ function readEnv(file) {
 
 // Single source of truth for the YAML frontmatter delimiters. Every command
 // that locates frontmatter must go through here so the parse logic can't drift.
-const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
 
+/**
+ * @param {string} md
+ * @param {{ required?: boolean }} [opts]
+ * @returns {string}
+ */
 function frontmatterText(md, { required = true } = {}) {
     const fm = md.match(FRONTMATTER_RE);
     if (!fm && required) throw new Error("Missing YAML frontmatter");
@@ -191,23 +274,41 @@ function frontmatterText(md, { required = true } = {}) {
 
 // Parse frontmatter from an already-read Markdown string. Use this when the
 // caller already has the file contents in hand, to avoid re-reading.
+/**
+ * @param {string} md
+ * @param {{ required?: boolean }} [opts]
+ * @returns {Frontmatter}
+ */
 function parseFrontmatter(md, { required = false } = {}) {
-    return parseSimpleYaml(frontmatterText(md, { required }));
+    return /** @type {Frontmatter} */ (parseSimpleYaml(frontmatterText(md, { required })));
 }
 
 // Read a testcase file and return only its parsed frontmatter. Forgiving by
 // default (missing frontmatter -> {}) to match the list/new/duplicate-id
 // scans; pass { required: true } when a missing block should throw.
+/**
+ * @param {string} file
+ * @param {{ required?: boolean }} [opts]
+ * @returns {Frontmatter}
+ */
 function readMeta(file, opts = {}) {
     return parseFrontmatter(readFileSync(file, "utf8"), opts);
 }
 
+/**
+ * @param {string} file
+ * @returns {TestCase}
+ */
 function readCase(file) {
     if (!existsSync(file)) throw new Error(`File not found: ${file}`);
     const md = readFileSync(file, "utf8");
     return { md, meta: parseFrontmatter(md, { required: true }), steps: parseSteps(md) };
 }
 
+/**
+ * @param {string} md
+ * @returns {Step[]}
+ */
 function parseSteps(md) {
     const body = md.replace(FRONTMATTER_RE, "");
     const parts = body.split(/^###\s+\d+\.\s+/m).slice(1);
@@ -228,6 +329,11 @@ function parseSteps(md) {
     return steps;
 }
 
+/**
+ * @param {string} error
+ * @param {string} [consoleErrors]
+ * @returns {ClassificationResult}
+ */
 function classifyError(error, consoleErrors = "") {
     const e = String(error || "").toLowerCase();
     // env_error before selector_drift ("command not found" is not DOM drift)
@@ -235,7 +341,6 @@ function classifyError(error, consoleErrors = "") {
         return { class: "env_error", hint: "Tooling/environment problem (missing binary, PATH, or permission). Run ./browser-test doctor; fix the runner host, not the test." };
     }
     // FAIL: guards are authored assertions — match before auth_env so text like
-    // "FAIL: login form not rendered" is not misread as an auth problem.
     if (/(^|\s)fail:/.test(e)) {
         return { class: "assertion_drift", hint: "A step guard asserted a condition that did not hold. Re-explore the step; confirm whether the app changed or regressed." };
     }
@@ -258,10 +363,18 @@ function classifyError(error, consoleErrors = "") {
     return { class: "unknown", hint: "Read summary.md → stepN-diff.txt → final-annotated.png → console-errors.log in order." };
 }
 
+/**
+ * @param {string} value
+ * @returns {string}
+ */
 function shellQuote(value) {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * @param {Record<string, any>} vars
+ * @returns {string}
+ */
 function buildShellEnv(vars) {
     return Object.entries(vars)
         .filter(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && v !== null && v !== undefined)
@@ -269,12 +382,20 @@ function buildShellEnv(vars) {
         .join("\n");
 }
 
+/**
+ * @param {string} file
+ * @param {any} value
+ */
 function writeJson(file, value) {
     writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 // Atomically repoint the 'latest' symlink: create a temp link then rename, so a
 // crash mid-swap never leaves 'latest' dangling. Falls back to unlink+symlink.
+/**
+ * @param {string} latest
+ * @param {string} target
+ */
 function ensureLatestSymlink(latest, target) {
     const tmp = `${latest}.tmp${process.pid}`;
     try { unlinkSync(tmp); } catch { }
@@ -289,8 +410,16 @@ function ensureLatestSymlink(latest, target) {
 }
 
 // A testcase file under tests/; names starting with "_" are templates, skipped.
+/**
+ * @param {string} f
+ * @returns {boolean}
+ */
 function isTestFile(f) { return f.endsWith(".md") && !f.startsWith("_"); }
 
+/**
+ * @param {string} input
+ * @returns {string[]}
+ */
 function expandFiles(input) {
     if (!input) return [];
     const p = resolve(ROOT, input);
@@ -302,12 +431,17 @@ function expandFiles(input) {
 }
 
 class Runner {
+    /**
+     * @param {RunOptions & { file: string }} opts
+     * @param {TestCase} tc
+     */
     constructor(opts, tc) {
         this.opts = opts;
         this.tc = tc;
         this.meta = tc.meta;
         this.session = opts.session || this.meta.session;
         if (!this.session) throw new Error("Missing session");
+        // @ts-ignore - opts.timeout is number|string|undefined at runtime from CLI
         this.timeoutMs = opts.timeout != null && opts.timeout !== ""
             ? Number(opts.timeout) * 1000
             : Number(this.meta.timeout_ms ?? 30000);
@@ -320,6 +454,10 @@ class Runner {
         this.logLevel = "minimal";
     }
 
+    /**
+     * @param {Record<string, any>} envVars
+     * @returns {string}
+     */
     resolveLogLevel(envVars) {
         const raw = String(
             this.opts.logLevel
@@ -332,6 +470,10 @@ class Runner {
         return this.opts.verbose ? "verbose" : level;
     }
 
+    /**
+     * @param {string} text
+     * @returns {void}
+     */
     appendLog(text) {
         if (!text) return;
         const tail = text.endsWith("\n") ? text : `${text}\n`;
@@ -339,6 +481,9 @@ class Runner {
         else this.logBuffer += tail;
     }
 
+    /**
+     * @returns {void}
+     */
     flushBufferedLog() {
         if (this.persistLog) return;
         writeFileSync(this.logFile, this.logBuffer);
@@ -346,6 +491,9 @@ class Runner {
         this.persistLog = true;
     }
 
+    /**
+     * @returns {Record<string, any>}
+     */
     vars() {
         if (!this._envLayer) {
             const envFile = this.opts.env || this.meta.env || "env/env.yaml";
@@ -379,6 +527,9 @@ class Runner {
 
     // Frontmatter-derived AGENT_BROWSER_* must also reach runner-spawned calls:
     // the browser is often launched by applySettings/state-load, not step bash.
+    /**
+     * @returns {Record<string, string>}
+     */
     abEnv() {
         if (!this._abEnv) {
             const picked = {};
@@ -391,6 +542,11 @@ class Runner {
         return this._abEnv;
     }
 
+    /**
+     * @param {string[]} args
+     * @param {{ allowFail?: boolean, untrustedContent?: boolean }} [options]
+     * @returns {{ stdout: string, stderr: string, output: string, status: number|null, error?: Error }}
+     */
     ab(args, options = {}) {
         // untrustedContent: page content that lands in agent-read artifacts
         // (heal-brief, diffs) gets boundary markers; ambient env value wins.
@@ -412,6 +568,11 @@ class Runner {
         return { ...res, output: out };
     }
 
+    /**
+     * @param {{ error?: (Error & { code?: string }), signal?: string, status?: number|null }} res
+     * @param {string} out
+     * @returns {string}
+     */
     spawnErrorMessage(res, out) {
         const timedOut = res.error?.code === "ETIMEDOUT" || res.signal === "SIGTERM";
         if (timedOut) {
@@ -421,6 +582,7 @@ class Runner {
         return res.error?.message || out.trim().split(/\r?\n/).slice(-1)[0] || `exit ${res.status}`;
     }
 
+    /** @returns {void} */
     setup() {
         if (!this.meta.id) throw new Error("Missing id");
         const stamp = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -429,12 +591,29 @@ class Runner {
         mkdirSync(join(ROOT, "outputs", this.meta.id, "downloads"), { recursive: true });
         const latest = join(ROOT, "outputs", this.meta.id, "latest");
         ensureLatestSymlink(latest, basename(this.runDir));
+        this.pruneOldRuns();
         this.logFile = join(this.runDir, "run.log");
         const header = `browser-test ${VERSION}\nTest: ${this.meta.id} ${this.meta.title || ""}\nSession: ${this.session}\nLog level: ${this.logLevel}\n\n`;
         if (this.persistLog) writeFileSync(this.logFile, header);
         else this.logBuffer = header;
     }
 
+    /** @returns {void} */
+    pruneOldRuns() {
+        if (!Number.isFinite(RUN_RETENTION) || RUN_RETENTION < 1) return;
+        try {
+            const dir = join(ROOT, "outputs", this.meta.id);
+            const runs = readdirSync(dir).filter((d) => /^\d{4}-/.test(d)).sort();
+            for (const old of runs.slice(0, -RUN_RETENTION)) {
+                rmSync(join(dir, old), { recursive: true, force: true });
+            }
+        } catch { /* retention must never break a run */ }
+    }
+
+    /**
+     * @param {string} code
+     * @param {Record<string, any>} vars
+     */
     runShell(code, vars) {
         const script = [
             "set -euo pipefail",
@@ -456,24 +635,35 @@ class Runner {
         }
     }
 
+    /** @returns {string} */
     captureSnapshot() {
         const res = this.ab(["snapshot", "-i"], { allowFail: true, untrustedContent: true });
         return res.output || "";
     }
 
+    /** @returns {string} */
     captureDiff() {
         const res = this.ab(["diff", "snapshot"], { allowFail: true, untrustedContent: true });
         return res.output || "";
     }
 
+    /**
+     * @param {string} file
+     * @returns {void}
+     */
     snapshot(file) {
         writeFileSync(join(this.runDir, file), this.captureSnapshot());
     }
 
+    /**
+     * @param {string} file
+     * @returns {void}
+     */
     diff(file) {
         writeFileSync(join(this.runDir, file), this.captureDiff());
     }
 
+    /** @returns {void} */
     applySettings() {
         if (this.meta.viewport) {
             const [w, h] = String(this.meta.viewport).split("x");
@@ -483,9 +673,13 @@ class Runner {
         if (this.meta.color_scheme) this.ab(["set", "media", String(this.meta.color_scheme)], { allowFail: true });
     }
 
+    /** @returns {number} */
     run() {
         let vars = {};
-        try { vars = this.vars(); } catch { vars = {}; }
+        try { vars = this.vars(); } catch (err) {
+            vars = {};
+            if (!this.opts.ci) console.error(`WARN: could not read env/data vars: ${err.message}`);
+        }
         this.logLevel = this.resolveLogLevel(vars);
         this.persistLog = this.logLevel !== "minimal";
         this.snapshotEveryStep = this.logLevel === "verbose";
@@ -558,6 +752,7 @@ class Runner {
         return this.failed ? 1 : 0;
     }
 
+    /** @returns {void} */
     finalChecks() {
         if (this.meta.expect?.url) {
             const res = this.ab(["get", "url"]);
@@ -578,6 +773,10 @@ class Runner {
         }
     }
 
+    /**
+     * @param {Step|undefined} stepDef
+     * @param {ClassificationResult} triage
+     */
     writeHealBrief(stepDef, triage) {
         // A reviewable brief, not an auto-rewrite. Gives the agent everything
         // needed to re-resolve the failed step from its intent.
@@ -612,6 +811,9 @@ class Runner {
         try { writeFileSync(join(this.runDir, "heal-brief.md"), lines.join("\n")); } catch { }
     }
 
+    /**
+     * @param {number} durationMs
+     */
     finish(durationMs) {
         this.ab(["screenshot", "--full", join(this.runDir, "final.png")], { allowFail: true });
         this.ab(["screenshot", "--annotate", join(this.runDir, "final-annotated.png")], { allowFail: true });
@@ -651,7 +853,10 @@ class Runner {
             timestamp: new Date().toISOString(),
         };
         writeJson(join(this.runDir, "result.json"), result);
-        if (this.opts.report) writeJson(resolve(ROOT, this.opts.report), result);
+        if (this.opts.report) {
+            try { writeJson(resolve(ROOT, this.opts.report), result); }
+            catch (e) { console.error(`WARN: could not write --report ${this.opts.report}: ${e.message}`); }
+        }
         writeFileSync(join(this.runDir, "summary.md"), summary(result));
         this.result = result;
         appendHistory({
@@ -673,6 +878,11 @@ class Runner {
 
 // Tiny glob→regex for expect.url: ** spans path segments, * stays within one.
 // Anchored to a full match. Not a general glob engine (no ?, {}, [] support).
+/**
+ * @param {string} pattern
+ * @param {string} value
+ * @returns {boolean}
+ */
 function globMatch(pattern, value) {
     let regex = "";
     for (let i = 0; i < pattern.length; i++) {
@@ -685,9 +895,13 @@ function globMatch(pattern, value) {
     return new RegExp(`^${regex}$`).test(value);
 }
 
+/**
+ * @param {RunResult} result
+ * @returns {string}
+ */
 function summary(result) {
     if (result.status === "pass") return `# ${result.tc_id} PASS\n\nArtifacts: ${result.artifacts}\n`;
-    const f = result.failed || {};
+    const f = /** @type {FailureInfo} */ (result.failed || {});
     const parts = [
         `# ${result.tc_id} FAIL`,
         "",
@@ -718,7 +932,7 @@ const TRAP_ERR = /\btrap\b[^\n]*\bERR\b/;
 const TAUTOLOGY_GLOB = /^\*{1,2}(?:\/\*{1,2})*$/; // "*", "**", "**/**", ...
 const HARDCODED_URL = /https?:\/\/[^\s"'`)$]+/g;
 const URL_ALLOWLIST = /(?:agent-browser\.dev|github\.com\/vercel-labs\/agent-browser|localhost|127\.0\.0\.1|example\.(?:com|org|net))/;
-const HARDCODED_CRED = /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?token)\s*[=:]\s*["']?[A-Za-z0-9_\-./]{6,}/i;
+const HARDCODED_CRED = /\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?token|auth[_-]?token|bearer)\s*[=:]\s*["']?[A-Za-z0-9_\-./]{6,}/i;
 // ISO date, or a month name adjacent to a day/year number. Requiring an adjacent
 // number avoids flagging ordinary prose like "you may continue".
 const MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December";
@@ -739,8 +953,47 @@ const VALIDATOR_POLICY = {
     positionalDomQuery: /query(?:Selector|SelectorAll)\s*\([^)]*\)\s*\[\d+\]/,
 };
 
+/**
+ * @param {string} rule
+ * @param {string} label
+ * @param {string} message
+ * @param {string} fix
+ * @returns {ValidationError}
+ */
 function v(rule, label, message, fix) { return { rule, label, message, fix }; }
 
+// parseSimpleYaml silently skips lines it cannot parse, and buildShellEnv drops
+// keys that are not valid shell identifiers — surface both before the run.
+/**
+ * @param {string} file
+ * @returns {string[]}
+ */
+function dataFileIssues(file) {
+    const issues = [];
+    let parent = null;
+    const lines = readFileSync(file, "utf8").split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+        const line = stripComment(lines[i]);
+        if (!line.trim()) continue;
+        const nested = parent ? line.match(/^  ([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/) : null;
+        const top = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
+        const m = nested || top;
+        if (!m) {
+            issues.push(`line ${i + 1} is not 'key: value' and will be silently ignored: ${line.trim()}`);
+            continue;
+        }
+        if (m === top) parent = top[2] === "" ? top[1] : null;
+        if (m[1].includes("-")) {
+            issues.push(`key '${m[1]}' contains '-' so it can never become a $shell_var`);
+        }
+    }
+    return issues;
+}
+
+/**
+ * @param {string} code
+ * @returns {string[]}
+ */
 function logicalLines(code) {
     const out = [];
     let cur = "";
@@ -757,6 +1010,10 @@ function logicalLines(code) {
     return out;
 }
 
+/**
+ * @param {string} line
+ * @returns {string[]}
+ */
 function tokenizeShellLine(line) {
     const tokens = [];
     let cur = "";
@@ -789,6 +1046,10 @@ function tokenizeShellLine(line) {
     return tokens;
 }
 
+/**
+ * @param {string[]} args
+ * @returns {{ hasSession: boolean, sessionValue: string|null, command: string, args: string[] }}
+ */
 function parseAgentBrowserArgs(args) {
     let hasSession = false;
     let sessionValue = null;
@@ -821,6 +1082,10 @@ function parseAgentBrowserArgs(args) {
     return { hasSession, sessionValue, command: args[i] || "", args: args.slice(i + 1) };
 }
 
+/**
+ * @param {string} raw
+ * @returns {AgentBrowserInvocation[]}
+ */
 function agentBrowserInvocationsInLine(raw) {
     const invocations = [];
     const trimmed = raw.trim();
@@ -848,6 +1113,10 @@ function agentBrowserInvocationsInLine(raw) {
     return invocations;
 }
 
+/**
+ * @param {string} code
+ * @returns {AnalyzedLine[]}
+ */
 function analyzeStepCode(code) {
     return logicalLines(code).map((raw) => ({
         raw,
@@ -857,21 +1126,40 @@ function analyzeStepCode(code) {
     }));
 }
 
+/**
+ * @param {Step} step
+ * @param {AgentBrowserInvocation[]} invocations
+ * @returns {boolean}
+ */
 function hasCheckedGet(step, invocations) {
     if (!invocations.some((x) => x.command === "get")) return true;
     return VALIDATOR_POLICY.checkedGetShellSignals.test(step.code);
 }
 
+/**
+ * @param {Step} step
+ * @param {AgentBrowserInvocation[]} invocations
+ * @returns {boolean}
+ */
 function hasBrowserAssertion(step, invocations) {
     if (/\bgrep\b/.test(step.code)) return true;
     if (invocations.some((x) => VALIDATOR_POLICY.assertionCommands.has(x.command))) return true;
     return invocations.some((x) => x.command === "get");
 }
 
+/**
+ * @param {{ command: string, args: string[], hasInlineComment: boolean }} call
+ * @returns {boolean}
+ */
 function isBareMsWait(call) {
     return call.command === "wait" && /^\d+$/.test(call.args[0] || "") && !call.hasInlineComment;
 }
 
+/**
+ * @param {TestCase} tc
+ * @param {string} file
+ * @returns {{ errors: ValidationError[], warnings: ValidationError[] }}
+ */
 function collectValidation(tc, file) {
     const errors = [];
     const warnings = [];
@@ -911,10 +1199,19 @@ function collectValidation(tc, file) {
             }
         }
     }
-    if (tc.meta.data && !existsSync(resolve(ROOT, String(tc.meta.data)))) {
-        errors.push(v("data_missing", "frontmatter",
-            `data file not found: ${tc.meta.data}`,
-            "create the file or remove the data field"));
+    if (tc.meta.data) {
+        const dataPath = resolve(ROOT, String(tc.meta.data));
+        if (!existsSync(dataPath)) {
+            errors.push(v("data_missing", "frontmatter",
+                `data file not found: ${tc.meta.data}`,
+                "create the file or remove the data field"));
+        } else {
+            for (const issue of dataFileIssues(dataPath)) {
+                warnings.push(v("data_invalid", "frontmatter",
+                    `${tc.meta.data}: ${issue}`,
+                    "use flat 'key: value' lines with [A-Za-z0-9_] keys so each key becomes a $shell_var"));
+            }
+        }
     }
     if (/^(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?token|auth[_-]?token|bearer)\s*:\s*(?!null|""|'')\S+/im.test(frontmatter)) {
         errors.push(v("secret_in_frontmatter", "frontmatter",
@@ -1073,6 +1370,11 @@ function collectValidation(tc, file) {
     return { errors, warnings };
 }
 
+/**
+ * @param {TestCase} tc
+ * @param {string} file
+ * @returns {number}
+ */
 function validate(tc, file) {
     const { errors, warnings } = collectValidation(tc, file);
     for (const w of warnings) console.warn(`! warn[${w.rule}] ${w.label}: ${w.message}\n  -> fix: ${w.fix}`);
@@ -1099,6 +1401,11 @@ function gitCommit() {
 
 // Cross-process file lock via O_EXCL; reclaims a stale lock (>10s old, from a
 // crashed writer). Returns a release fn, or null if it couldn't acquire.
+/**
+ * @param {string} lockPath
+ * @param {number} [tries]
+ * @returns {(() => void)|null}
+ */
 function acquireLock(lockPath, tries = 50) {
     for (let i = 0; i < tries; i++) {
         try {
@@ -1109,13 +1416,15 @@ function acquireLock(lockPath, tries = 50) {
         } catch (e) {
             if (e.code !== "EEXIST") return null;
             try { if (Date.now() - statSync(lockPath).mtimeMs > 10000) { unlinkSync(lockPath); continue; } } catch { }
-            // brief spin without async; telemetry is not hot-path
-            const until = Date.now() + 20; while (Date.now() < until) { /* spin */ }
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
         }
     }
     return null;
 }
 
+/**
+ * @param {HistoryRecord} record
+ */
 function appendHistory(record) {
     try {
         const f = HISTORY_FILE();
@@ -1141,6 +1450,7 @@ function appendHistory(record) {
     } catch { /* telemetry must never break a run */ }
 }
 
+/** @returns {HistoryRecord[]} */
 function readHistory() {
     const f = HISTORY_FILE();
     if (!existsSync(f)) return [];
@@ -1152,6 +1462,10 @@ function readHistory() {
 const FLAKE_MIN_RUNS = 5;
 const QUARANTINABLE_CLASSES = new Set(["timing", "selector_drift"]); // test-side, safe to quarantine
 
+/**
+ * @param {HistoryRecord[]} records
+ * @returns {Map<string, HistoryRecord[]>}
+ */
 function indexHistory(records) {
     const byTc = new Map();
     for (const r of records) {
@@ -1165,6 +1479,11 @@ function indexHistory(records) {
 
 // Score one flow's flakiness from its own run slice; narrows the window to the
 // latest commit once there's enough data, so pre-fix failures don't taint it.
+/**
+ * @param {HistoryRecord[]|null|undefined} runsForTc
+ * @param {string} tcId
+ * @returns {{ tc_id: string, runs: number, pass: number, fail: number, passRate: number|null, flakeScore: number, flaky: boolean, intermittent: boolean, classes: Record<string, number> }}
+ */
 function flakeStats(runsForTc, tcId) {
     let all = runsForTc || [];
     const latestCommit = all.length ? all[all.length - 1].commit : undefined;
@@ -1176,6 +1495,7 @@ function flakeStats(runsForTc, tcId) {
     const n = runs.length;
     if (n === 0) return { tc_id: tcId, runs: 0, pass: 0, fail: 0, passRate: null, flakeScore: 0, flaky: false, intermittent: false, classes: {} };
     let pass = 0, fail = 0, transitions = 0;
+    /** @type {Record<string, number>} */
     const classes = {};
     for (let i = 0; i < n; i++) {
         const ok = runs[i].status === "pass";
@@ -1193,6 +1513,7 @@ function flakeStats(runsForTc, tcId) {
 
 const DEFAULT_QUARANTINE_DAYS = 14;
 
+/** @returns {QuarantineEntry[]} */
 function quarantineEntries() {
     const f = QUARANTINE_FILE();
     if (!existsSync(f)) return [];
@@ -1206,15 +1527,25 @@ function quarantineEntries() {
     } catch { return []; }
 }
 
+/**
+ * @param {{ expires: string|null }} entry
+ * @param {number} [now]
+ * @returns {boolean}
+ */
 function isExpired(entry, now = Date.now()) {
     return entry.expires != null && Date.parse(entry.expires) <= now;
 }
 
+/** @returns {string[]} */
 function loadQuarantine() {
     const now = Date.now();
     return quarantineEntries().filter((e) => !isExpired(e, now)).map((e) => e.id);
 }
 
+/**
+ * @param {QuarantineEntry[]} entries
+ * @returns {QuarantineEntry[]}
+ */
 function saveQuarantineEntries(entries) {
     const seen = new Map();
     for (const e of entries) seen.set(e.id, e); // last wins
@@ -1226,6 +1557,10 @@ function saveQuarantineEntries(entries) {
     return list;
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {number}
+ */
 function quarantineCommand(argv) {
     const args = argv.slice(3);
     // Skip flag values too: in `add --reason why TC-001`, "why" is not the TC-ID.
@@ -1277,6 +1612,7 @@ function quarantineCommand(argv) {
     return 1;
 }
 
+/** @returns {number} */
 function flakyCommand() {
     const records = readHistory();
     if (!records.length) { console.log("no run history yet (run some flows first)"); return 0; }
@@ -1313,6 +1649,10 @@ function flakyCommand() {
 
 // --- list / history ---
 
+/**
+ * @param {string|null} tcId
+ * @returns {RunResult|null}
+ */
 function readLastResult(tcId) {
     if (!tcId) return null;
     const latestLink = resolve(ROOT, "outputs", tcId, "latest");
@@ -1324,6 +1664,10 @@ function readLastResult(tcId) {
     } catch { return null; }
 }
 
+/**
+ * @param {{ strict?: boolean }} [opts]
+ * @returns {number}
+ */
 function listCommand(opts = {}) {
     const testsDir = resolve(ROOT, "tests");
     if (!existsSync(testsDir)) { console.log("no tests/ directory"); return 0; }
@@ -1359,6 +1703,10 @@ function listCommand(opts = {}) {
     return 0;
 }
 
+/**
+ * @param {string|null} tcId
+ * @returns {number}
+ */
 function historyCommand(tcId) {
     const records = readHistory();
     if (records.length) {
@@ -1411,6 +1759,10 @@ function historyCommand(tcId) {
 
 // --- heal ---
 
+/**
+ * @param {string[]} argv
+ * @returns {number}
+ */
 function healCommand(argv) {
     const positionals = argv.slice(3).filter((a) => !a.startsWith("-"));
     const file = positionals[0];
@@ -1455,6 +1807,7 @@ function healCommand(argv) {
 
 // --- coverage ---
 
+/** @returns {Array<{ module: string, name: string, route: string }>|null} */
 function loadCoverageMap() {
     const f = resolve(ROOT, "coverage.map");
     if (!existsSync(f)) return null;
@@ -1468,6 +1821,7 @@ function loadCoverageMap() {
     return features;
 }
 
+/** @returns {Array<{ file: string, id: string|null, module: string|null, expectUrl: string|null }>} */
 function testInventory() {
     const dir = resolve(ROOT, "tests");
     if (!existsSync(dir)) return [];
@@ -1480,6 +1834,7 @@ function testInventory() {
         });
 }
 
+/** @returns {number} */
 function coverageCommand() {
     const features = loadCoverageMap();
     const tests = testInventory();
@@ -1563,6 +1918,7 @@ function coverageCommand() {
 
 // --- eval: the skill proves itself ---
 
+/** @returns {number} */
 function evalCommand() {
     let pass = 0, fail = 0;
     const ok = (name) => { pass++; console.log(`  ok   ${name}`); };
@@ -1571,7 +1927,7 @@ function evalCommand() {
     // 1. Golden validation cases.
     const manifestPath = resolve(ROOT, "eval/golden/manifest.json");
     if (existsSync(manifestPath)) {
-        let manifest = { good: [], bad: [] };
+        let manifest = { good: [], bad: [], warn: [] };
         try { manifest = JSON.parse(readFileSync(manifestPath, "utf8")); } catch { }
         console.log("Golden — good (must validate):");
         for (const rel of manifest.good || []) {
@@ -1588,6 +1944,16 @@ function evalCommand() {
                 const { errors } = collectValidation(readCase(file), file);
                 errors.some((e) => e.rule === c.rule) ? ok(`${c.file} → ${c.rule}`)
                     : bad(c.file, `expected rule '${c.rule}', got: ${errors.map((e) => e.rule).join(",") || "none"}`);
+            } catch (e) { bad(c.file, e.message); }
+        }
+        console.log("Golden — warn (must trip the target warning, no errors):");
+        for (const c of manifest.warn || []) {
+            const file = resolve(ROOT, "eval/golden", c.file);
+            try {
+                const { errors, warnings } = collectValidation(readCase(file), file);
+                if (errors.length) bad(c.file, `unexpected errors: ${errors.map((e) => e.rule).join(",")}`);
+                else warnings.some((w) => w.rule === c.rule) ? ok(`${c.file} → warn ${c.rule}`)
+                    : bad(c.file, `expected warning '${c.rule}', got: ${warnings.map((w) => w.rule).join(",") || "none"}`);
             } catch (e) { bad(c.file, e.message); }
         }
     } else {
@@ -1669,6 +2035,14 @@ function evalCommand() {
 // --- scaffolder (new) ---
 
 // Scaffold stays terse: the contract lives in AGENTS.md, not in every testcase.
+/**
+ * @param {string} id
+ * @param {string} module
+ * @param {string} session
+ * @param {string} title
+ * @param {{ stateFile?: string|null, dataFile?: string|null }} [options]
+ * @returns {string}
+ */
 function scaffoldBody(id, module, session, title, { stateFile = null, dataFile = null } = {}) {
     const authHint = stateFile
         ? `\n<!-- Auth via ${stateFile} — create once: agent-browser --session <s> state save ${stateFile} -->\n`
@@ -1707,6 +2081,10 @@ agent-browser --session "$SESSION" wait --text "<FILL: stable text you observed>
 `;
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {Promise<number>}
+ */
 async function newCommand(argv) {
     const pos = argv.slice(3).filter((a) => !a.startsWith("-"));
     const module = pos[0];
@@ -1762,6 +2140,10 @@ async function newCommand(argv) {
     return 0;
 }
 
+/**
+ * @param {string[]} files
+ * @returns {Record<string, string[]>}
+ */
 function duplicateIds(files) {
     const byId = {};
     for (const f of files) {
@@ -1774,6 +2156,10 @@ function duplicateIds(files) {
 }
 
 // --- parallel execution (-j) ---
+/**
+ * @param {string|number|null|undefined} raw
+ * @returns {number}
+ */
 function resolveJobs(raw) {
     if (raw == null) return 1;
     // 'auto' caps at 4: each job is a full browser, not a thread. -j N is honored as given.
@@ -1782,9 +2168,15 @@ function resolveJobs(raw) {
     return Number.isFinite(n) && n >= 1 ? n : 1;
 }
 
+/**
+ * @param {string} file
+ * @param {RunOptions} opts
+ * @returns {string[]}
+ */
 function workerArgs(file, opts) {
     const a = ["run", file, "--ci"];
-    if (opts.env) a.push("-e", opts.env);
+    if (opts.env) a.push("-e", /** @type {string} */ (opts.env));
+    // @ts-ignore - opts.timeout is number|string|undefined at runtime from CLI
     if (opts.timeout != null && opts.timeout !== "") a.push("-t", String(opts.timeout));
     if (opts.logLevel) a.push("--log-level", String(opts.logLevel));
     if (opts.noTeardown) a.push("--no-teardown");
@@ -1793,6 +2185,11 @@ function workerArgs(file, opts) {
     return a;
 }
 
+/**
+ * @param {{ idx: number, file: string, id: string, title: string }} item
+ * @param {RunOptions} opts
+ * @returns {Promise<RunResult>}
+ */
 function runWorkerFile(item, opts) {
     return new Promise((resolveP) => {
         const startedAt = Date.now();
@@ -1836,11 +2233,19 @@ async function runPool(worklist, opts, jobs) {
 
 // --- CI outputs + doctor ---
 
+/**
+ * @param {string} s
+ * @returns {string}
+ */
 function xmlEscape(s) {
     return cleanText(s).replace(/[<>&"']/g, (c) =>
         ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }[c]));
 }
 
+/**
+ * @param {RunResult[]} results
+ * @returns {string}
+ */
 function junitXml(results) {
     const tests = results.length;
     const failures = results.filter((r) => r.status === "fail").length;
@@ -1850,7 +2255,7 @@ function junitXml(results) {
     const cases = results.map((r) => {
         const time = ((r.duration_ms || 0) / 1000).toFixed(3);
         const name = xmlEscape(`${r.tc_id} ${r.title || ""}`.trim());
-        const f = r.failed || {};
+        const f = /** @type {FailureInfo} */ (r.failed || {});
         if (r.status === "skipped") {
             return `    <testcase classname="papaya" name="${name}" time="${time}"><skipped message="quarantined"/></testcase>`;
         }
@@ -1872,6 +2277,7 @@ ${cases}
 `;
 }
 
+/** @returns {number} */
 function doctorCommand() {
     let hard = 0;
     const okLine = (s) => console.log(`  ok    ${s}`);
@@ -1914,6 +2320,10 @@ function doctorCommand() {
 
 // --- discover: list testable locators on a live page ---
 
+/**
+ * @param {RunOptions} opts
+ * @returns {number}
+ */
 function discoverCommand(opts) {
     const url = opts.file;
     if (!url) {
@@ -1921,6 +2331,10 @@ function discoverCommand(opts) {
         console.error("");
         console.error("Opens <url> and lists all testable locators — data-qa/testid attributes,");
         console.error("placeholders, and interactive elements — so you can choose stable selectors.");
+        return 1;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+        console.error(`discover: expected an http(s):// URL, got: ${url}`);
         return 1;
     }
     const session = opts.session || `papaya_discover_${process.pid}`;
@@ -2067,8 +2481,10 @@ try {
         if (!files.length) throw new Error(`Not found: ${opts.file}`);
         runningDir = statSync(resolve(ROOT, opts.file)).isDirectory();
         const quarantined = new Set(loadQuarantine());
-        if (opts.session && files.length > 1) {
-            log(`WARN  --session "${opts.session}" is shared across ${files.length} flows; state will leak between them. Omit -s for per-flow isolation.`);
+        if (opts.report) {
+            const rp = resolve(ROOT, opts.report);
+            if (existsSync(rp) && statSync(rp).isDirectory()) throw new Error(`--report target is a directory: ${opts.report}`);
+            if (files.length > 1) log(`WARN  --report holds one result; with ${files.length} flows only the last sequential run survives (parallel workers skip it). Use --junit for batch reports.`);
         }
         const dups = process.env.PAPAYA_WORKER ? {} : duplicateIds(runningDir ? files : expandFiles("tests"));
         if (Object.keys(dups).length) {
@@ -2100,6 +2516,7 @@ try {
 
             if (jobs > 1 && worklist.length > 1) {
                 // Parallel: one isolated child process per testcase, ≤ jobs alive.
+                if (opts.session) log(`NOTE  -s/--session is ignored in parallel mode; each flow uses its own frontmatter session.`);
                 log(`Running ${worklist.length} flows with ${jobs} workers…`);
                 const results = await runPool(worklist, opts, jobs);
                 results.forEach((r, k) => {
@@ -2109,6 +2526,9 @@ try {
             } else {
                 // Sequential, in-process (default): no spawn overhead, fully
                 // deterministic — identical to the pre-parallel behavior.
+                if (opts.session && worklist.length > 1) {
+                    log(`WARN  --session "${opts.session}" is shared across ${worklist.length} flows; state will leak between them. Omit -s for per-flow isolation.`);
+                }
                 for (const item of worklist) {
                     let code = 1;
                     try {

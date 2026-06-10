@@ -57,6 +57,9 @@ Rules:
 - `techniques` is advisory. Unknown values warn, not fail.
 - The parser is intentionally small: scalars, inline arrays, and one nested
   mapping level for `expect`. Avoid multiline YAML, anchors, and deep nesting.
+- `data:` files must be flat `key: value` lines with `[A-Za-z0-9_]` keys.
+  The validator warns about lines the parser would silently ignore and keys
+  that cannot become `$shell_var`s.
 
 Optional fields:
 
@@ -134,7 +137,8 @@ State/profile/session data is secret. Reference paths only.
 ## Runner Output
 
 Artifacts live under `outputs/<TC-ID>/<run-id>/`, with `latest` pointing to the
-latest run.
+latest run. Only the 10 most recent runs per testcase are kept (override with
+`PAPAYA_KEEP_RUNS`).
 
 Always written: `summary.md`, `result.json`, `console-errors.log`,
 `console.log`, `final.png`, `final-annotated.png`.

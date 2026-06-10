@@ -71,7 +71,8 @@ The gate rejects false-green testcases:
 2. Every step has a real signal: `wait`, `find`, `is`, or a checked `get`.
 3. No hidden failures: no `set +e`, `set +o`, `|| true`, `|| :`, or `trap ERR`.
 4. No sleeps. A rare `agent-browser wait <ms>` needs an inline `# reason`.
-5. No hard-coded project URLs, credentials, secrets, or brittle dates.
+5. No hard-coded project URLs, credentials, or secrets. Brittle dates and
+   data-file lines the parser cannot use only warn.
 6. `expect.url` is a real route glob or `null`, never `**` or `""`.
 7. TC-IDs are unique across `tests/`.
 

@@ -38,12 +38,15 @@ list` shows expiry and flags `[EXPIRED]`.
 
 ## Parallelism (`-j`)
 
-Testcases are I/O-bound, so for a large suite `-j N` (or `-j auto`) runs N flows
-at once, each in its **own isolated child process** — separate agent-browser
-session, separate memory, crash-contained. Results are aggregated in input order
+Testcases are I/O-bound, so for a large suite `-j N` (or `-j auto`, which caps
+at 4 — each job is a full browser, not a thread) runs N flows at once, each in
+its **own isolated child process** — separate agent-browser session, separate
+memory, crash-contained. Results are aggregated in input order
 (deterministic report) regardless of finish order; JUnit/`--ci` output is
 identical to a sequential run. Default is `-j 1` (sequential). Pick N around your
 CPU/agent-browser capacity; a single-file run never spawns a worker.
+`-s/--session` is ignored in parallel mode — each flow keeps its own isolated
+frontmatter session.
 
 Example `--ci` stdout (one line, prefixed with the marker):
 

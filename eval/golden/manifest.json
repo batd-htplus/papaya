@@ -1,8 +1,9 @@
 {
-    "_note": "Golden cases for ./browser-test eval. 'good' must validate clean; each 'bad' must trip its target rule. This is the skill's own regression suite.",
+    "_note": "Golden cases for ./browser-test eval. 'good' must validate clean; each 'bad' must trip its target error rule; each 'warn' must trip its target warning without errors. This is the skill's own regression suite.",
     "good": [
         "good/001_home.md",
-        "good/002_validator_precision.md"
+        "good/002_validator_precision.md",
+        "good/003_crlf.md"
     ],
     "bad": [
         { "file": "bad/001_nosess.md",   "rule": "no_session" },
@@ -15,6 +16,11 @@
         { "file": "bad/001_swallow.md",  "rule": "swallow_exit" },
         { "file": "bad/001_strict.md",   "rule": "disable_strict" },
         { "file": "bad/001_tautology.md","rule": "expect_tautology" },
-        { "file": "bad/001_unchecked_get.md", "rule": "weak_assertion" }
+        { "file": "bad/001_unchecked_get.md", "rule": "weak_assertion" },
+        { "file": "bad/001_loglevel.md", "rule": "log_level_enum" },
+        { "file": "bad/001_datamissing.md", "rule": "data_missing" }
+    ],
+    "warn": [
+        { "file": "warn/001_datainvalid.md", "rule": "data_invalid" }
     ]
 }
