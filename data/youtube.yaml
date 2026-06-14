@@ -1,4 +1,0 @@
-# Inputs for TC-002 (YouTube). Keys become $shell_vars inside the bash blocks.
-search_term: "Come my way"
-title_match: "COME MY WAY"
-min_duration: "200"            # main MV ~3:55; ads are usually < 30s
