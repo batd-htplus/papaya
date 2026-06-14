@@ -1,0 +1,92 @@
+<svg viewBox="0 0 680 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d" font-family="'Comic Sans MS','Chalkboard SE','Segoe Print','Bradley Hand',cursive">
+<title id="t">Hand-drawn sketch: write a testcase once, re-run it without AI</title>
+<desc id="d">You describe in words, AI explores the real site and generates a .md file, then you re-run the md file without AI; pass means done, fail means fix and re-run.</desc>
+<style>
+  .ink{stroke:#2b2b2b;}
+  .box{fill:#fbfbf6;stroke:#2b2b2b;stroke-width:2.2;stroke-linejoin:round;}
+  .ttl{fill:#2b2b2b;font-size:15px;font-weight:700;}
+  .sub{fill:#6b6b62;font-size:12px;}
+  .hand{fill:#2b2b2b;font-size:13px;}
+  .blue{stroke:#2f5fb0;}
+  .bluetx{fill:#2f5fb0;font-size:12px;}
+  .red{stroke:#c0392b;}
+  .redtx{fill:#c0392b;font-size:12.5px;font-weight:700;}
+  .arrow{fill:none;stroke:#2b2b2b;stroke-width:2.2;stroke-linecap:round;}
+</style>
+<defs>
+  <path id="rbox" d="M6,4 C100,8 200,1 294,5 C299,20 297,38 296,53 C200,50 100,57 5,52 C2,36 3,19 6,4 Z"/>
+</defs>
+
+<text class="ttl" x="40" y="34" font-size="18">Idea: writing testcases the lazy way 😎</text>
+<path class="arrow" d="M44,42 C160,38 300,46 408,40" stroke-width="1.6"/>
+
+<g transform="translate(70,66) rotate(-1.2,150,28)">
+  <use href="#rbox" class="box"/>
+  <text class="ttl" x="18" y="24">1 · I describe it in words</text>
+  <text class="sub" x="18" y="44">“test the login flow”…</text>
+</g>
+<path class="arrow" d="M225,124 C231,135 220,146 227,159"/>
+<path class="arrow" d="M222,152 L227,160 L233,151" stroke-width="2.2"/>
+
+<g transform="translate(76,158) rotate(0.9,150,28)">
+  <use href="#rbox" class="box"/>
+  <text class="ttl" x="18" y="24">2 · AI explores the real site</text>
+  <text class="sub" x="18" y="44">Cursor · Claude · Copilot</text>
+</g>
+<path class="arrow" d="M227,216 C233,227 221,238 228,251"/>
+<path class="arrow" d="M223,244 L228,252 L234,243"/>
+
+<g transform="translate(68,250) rotate(-0.9,150,28)">
+  <use href="#rbox" class="box"/>
+  <text class="ttl" x="18" y="24">3 · It spits out a .md file</text>
+  <text class="sub" x="18" y="44">all verified steps inside</text>
+</g>
+<path class="arrow" d="M225,308 C231,322 219,338 227,355"/>
+<path class="arrow" d="M221,348 L227,356 L233,347"/>
+
+<g transform="translate(76,352) rotate(1.0,150,28)">
+  <use href="#rbox" class="box"/>
+  <text class="ttl" x="18" y="24">4 · Re-run the .md file</text>
+  <text class="sub" x="18" y="44">no AI needed anymore!</text>
+</g>
+<path class="arrow" d="M227,410 C233,421 221,432 228,447"/>
+<path class="arrow" d="M223,440 L228,448 L234,439"/>
+
+<g transform="translate(70,448) rotate(-1.0,150,28)">
+  <use href="#rbox" class="box"/>
+  <text class="ttl" x="18" y="24">5 · PASS or FAIL?</text>
+  <text class="sub" x="18" y="44">PASS → done · CI · coverage</text>
+</g>
+
+<path class="arrow red" stroke-dasharray="2 5" d="M372,476 C420,474 432,452 430,430 C428,408 410,392 374,392"/>
+<path class="arrow red" d="M382,386 L373,392 L381,400"/>
+<text class="redtx" x="436" y="440">FAIL →</text>
+<text class="redtx" x="436" y="458">fix &amp; re-run</text>
+
+<path class="arrow blue" d="M372,276 C392,270 404,272 420,268"/>
+<rect x="426" y="250" width="20" height="16" rx="2" class="box" stroke-width="1.8"/>
+<line x1="436" y1="250" x2="436" y2="266" class="ink" stroke-width="1.4"/>
+<text class="bluetx" x="452" y="263">zip it → anyone can run it</text>
+
+<g transform="translate(486,70)">
+  <rect x="0" y="10" width="34" height="28" rx="4" class="box" stroke-width="2"/>
+  <line x1="17" y1="10" x2="17" y2="2" class="ink" stroke-width="1.8"/>
+  <circle cx="17" cy="0" r="2.5" class="box"/>
+  <circle cx="10" cy="22" r="2.4" fill="#2b2b2b"/>
+  <circle cx="24" cy="22" r="2.4" fill="#2b2b2b"/>
+  <line x1="10" y1="31" x2="24" y2="31" class="ink" stroke-width="1.6"/>
+  <text class="sub" x="-10" y="56">AI: starts it off</text>
+</g>
+<path class="arrow" d="M548,92 C570,86 584,98 600,92" stroke-width="1.6"/>
+<g transform="translate(606,66)">
+  <circle cx="14" cy="8" r="7" class="box" stroke-width="2"/>
+  <line x1="14" y1="15" x2="14" y2="34" class="ink" stroke-width="2"/>
+  <path class="arrow" d="M2,22 C9,26 19,26 26,22" stroke-width="2"/>
+  <line x1="14" y1="34" x2="6" y2="48" class="ink" stroke-width="2"/>
+  <line x1="14" y1="34" x2="23" y2="48" class="ink" stroke-width="2"/>
+  <text class="sub" x="-14" y="64">me: in control</text>
+</g>
+
+<path class="arrow blue" d="M70,520 C220,514 430,524 560,516" stroke-width="1.6"/>
+<text class="hand" x="70" y="544" font-size="14">Write once — re-run forever, anyone can use it 🙌</text>
+</svg>

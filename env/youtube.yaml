@@ -1,0 +1,6 @@
+# Env for YouTube testcases. Committed; no secrets here.
+base_url: https://www.youtube.com   # YouTube root
+timeout_ms: 25000                   # per-step timeout default
+viewport: 1280x720
+headless: true                      # smoke test only — no playback; headed is slower
+log_level: normal                   # stream step progress + run.log (minimal hides output until fail)

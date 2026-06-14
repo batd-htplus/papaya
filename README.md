@@ -12,6 +12,8 @@ reliable, repeatable browser control.
 The `browser-test` CLI below is a tool the agent reaches for, not the point —
 the point is the agent and the flows it writes.
 
+![](./docs/architecture-flow-en.svg)
+
 **Humans read this file. LLM agents read [`AGENTS.md`](./AGENTS.md) first.**
 
 ## Files at a glance
